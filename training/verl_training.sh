@@ -5,7 +5,21 @@ export PYTHONBUFFERED=1
 # export RAY_DEBUG=1
 ulimit -c 0
 
-export WANDB_ENTITY="sample-efficient-rlvr" # team
+# Default to offline W&B unless a team entity is explicitly provided.
+if [[ -z "${WANDB_MODE:-}" ]]; then
+    if [[ -n "${WANDB_ENTITY:-}" ]]; then
+        export WANDB_MODE="online"
+    else
+        export WANDB_MODE="offline"
+    fi
+else
+    export WANDB_MODE
+fi
+
+# Only pass WANDB_ENTITY when explicitly provided by caller.
+if [[ -n "${WANDB_ENTITY:-}" ]]; then
+    export WANDB_ENTITY
+fi
 export EXPERIMENT=${1:-"experiment"}
 CONFIG_NAME=${2:-"ppo_trainer"}
 export TASK=${3:-"datasets/ttcs/lasgroup_verifiable-corpus_math-ai_math500_1000"}

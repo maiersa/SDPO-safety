@@ -1,0 +1,64 @@
+================================================================================
+SDPO-SAFETY: GRPO Training with RunAI - Quick Start Commands
+================================================================================
+
+ONE-TIME SETUP (create persistent conda environment on scratch)
+================================================================================
+
+source /opt/conda/etc/profile.d/conda.sh
+mkdir -p /mnt/dlabscratch1/samaier/conda-envs
+conda create -y -p /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo python=3.12
+conda activate /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo
+python -m pip install --upgrade pip
+
+INSTALL DEPENDENCIES
+================================================================================
+
+cd /dlabscratch1/samaier/projects/SDPO-safety
+
+pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+pip install -r requirements.txt
+
+pip install -e .
+
+pip install "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl"
+
+VERIFY INSTALLATION
+================================================================================
+
+source /opt/conda/etc/profile.d/conda.sh && conda activate /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo && python -c "import torch, flash_attn, verl; print('torch', torch.__version__, 'flash_attn', flash_attn.__version__)"
+
+Expected output:
+torch 2.5.1+cu124 flash_attn 2.8.3
+
+
+SUBMIT GRPO JOB (Method 1: Using run_runai_grpo.sh)
+================================================================================
+
+cd /dlabscratch1/samaier/projects/SDPO-safety && CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo bash run_runai_grpo.sh sdpo
+
+
+SUBMIT GRPO JOB (Method 2: Direct rs command)
+================================================================================
+
+rs grpo-${USER}-sdpo --gpu 1.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env USER=$USER CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo CONFIG_NAME=baseline_grpo DATA_PATH=datasets/tooluse SUFFIX=sdpo REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety LOG_DIR=/dlabscratch1/${USER}/output CKPT_DIR=/dlabscratch1/${USER}/checkpoints TRAINER_GPUS_PER_NODE=1 bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+rs grpo-${USER}-sdpo --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env USER=$USER CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo CONFIG_NAME=baseline_grpo DATA_PATH=datasets/tooluse SUFFIX=sdpo REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety LOG_DIR=/dlabscratch1/${USER}/output CKPT_DIR=/dlabscratch1/${USER}/checkpoints TRAINER_GPUS_PER_NODE=1 WANDB_ENTITY=samaier-epfl bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+rs grpo-${USER}-sdpo --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env USER=$USER CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo CONFIG_NAME=baseline_grpo DATA_PATH=datasets/tooluse SUFFIX=sdpo REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety LOG_DIR=/dlabscratch1/${USER}/output CKPT_DIR=/dlabscratch1/${USER}/checkpoints TRAINER_GPUS_PER_NODE=4 WANDB_ENTITY=samaier-epfl bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+
+MONITOR JOB STATUS
+================================================================================
+
+List all jobs:
+runai list
+
+Describe specific job:
+runai describe job grpo-samaier-sdpo -p dlab-samaier
+
+View logs:
+runai logs grpo-samaier-sdpo -p dlab-samaier | tail -n 200
+
+For H100 instead of default GPU pool, add: --node-pools h100
+For more GPUs, change: --gpu 1.0 to --gpu 4.0 (etc)
+
+================================================================================

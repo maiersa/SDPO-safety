@@ -1,0 +1,33 @@
+rs grpo-${USER}-sdpo --gpu 1.0 --cpu 16 --memory 120G --node-pools default --large-shm -- env USER=$USER CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo CONFIG_NAME=baseline_grpo DATA_PATH=datasets/tooluse SUFFIX=sdpo REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety LOG_DIR=/dlabscratch1/${USER}/output
+o
+u
+t
+p
+u
+t
+C
+K
+P
+T
+D
+I
+R
+=
+/
+d
+l
+a
+b
+s
+c
+r
+a
+t
+c
+h
+1
+/
+USER/outputCKPT 
+D
+​
+ IR=/dlabscratch1/{USER}/checkpoints TRAINER_GPUS_PER_NODE=1 bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
