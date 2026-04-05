@@ -22,6 +22,7 @@ ray[default]==2.53.0
 tensordict==0.10.0
 torchdata==0.11.0
 transformers==4.57.1
+openai==2.30.0
 wandb==0.23.1
 packaging==25.0
 uvicorn==0.40.0
