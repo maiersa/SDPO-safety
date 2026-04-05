@@ -47,6 +47,10 @@ tmp/
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Added datasets
+beavertails_safety
+bullshitbench
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
