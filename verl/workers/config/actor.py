@@ -56,6 +56,8 @@ class SelfDistillationConfig(BaseConfig):
         reprompt_template (str): Template for reprompting. Uses {prompt}, {solution}, {feedback} placeholders.
         solution_template (str): Template for formatting solution section. Uses {successful_previous_attempt} placeholder.
         feedback_template (str): Template for formatting feedback section. Uses {feedback_raw} placeholder.
+        include_constitution (bool): Whether to prepend privileged constitutional context to the teacher prompt.
+        constitution_path (Optional[str]): Optional override path for the constitution text file.
         include_environment_feedback (bool): Whether to include environment feedback in reprompting for wrong attempts.
         environment_feedback_only_without_solution (bool): If True, only use feedback when no solution is available (ignore feedback when solution exists).
         reprompt_template_feedback (str): Template for reprompting with feedback but no solution.
@@ -88,6 +90,8 @@ class SelfDistillationConfig(BaseConfig):
         "The following is feedback from your unsuccessful earlier attempt:\n\n"
         "{feedback_raw}\n\n"
     )
+    include_constitution: bool = False
+    constitution_path: Optional[str] = None
     include_environment_feedback: bool = False
     environment_feedback_only_without_solution: bool = False
 

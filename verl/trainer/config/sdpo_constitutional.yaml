@@ -1,0 +1,41 @@
+defaults:
+  - ppo_trainer
+  - user
+  - _self_
+
+# SDPO with Constitutional Teacher
+# On-policy self-distillation using privileged constitutional context in teacher
+
+max_model_len: 18944
+
+actor_rollout_ref:
+  actor:
+    ppo_mini_batch_size: 32
+    policy_loss:
+      loss_mode: sdpo
+    self_distillation:
+      max_reprompt_len: 10240
+      is_clip: 2.0
+      # Teacher receives constitutional context when building prompts
+      # See: verl/utils/reward_score/feedback/constitution_teacher.py
+      include_constitution: true
+    optim:
+      lr: 1e-5
+  rollout:
+    n: 4  # Baseten: 4 rollouts per prompt
+    calculate_log_probs: True
+
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: False
+  rollout_correction:
+    rollout_is: token
+    rollout_is_threshold: 2.0
+
+data:
+  train_batch_size: 32
+
+trainer:
+  val_before_train: False
+  project_name: SDPO-Constitutional-${oc.env:USER}
+  group_name: sdpo_constitutional

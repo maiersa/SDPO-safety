@@ -149,6 +149,9 @@ trainer:
   # Directory for logging validation data; no dump if null
   validation_data_dir: null
 
+  # If true, validation only generates and logs samples without calling any reward function or judge
+  validation_generations_only: False
+
   # Number of nodes used in the training
   nnodes: 1
 

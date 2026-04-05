@@ -62,6 +62,7 @@ from verl.utils.debug import marked_timer
 from verl.utils.import_utils import load_class_from_fqn
 from verl.utils.model import compute_position_id_with_mask
 from verl.utils.metric import reduce_metrics
+from verl.utils.reward_score.feedback.constitution_teacher import build_teacher_prompt, load_constitution
 from verl.utils.py_functional import rename_dict
 from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
@@ -457,7 +458,7 @@ class RayPPOTrainer:
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
-    def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
+    def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path, max_rows=None):
         """Dump rollout/validation samples as JSONL."""
         os.makedirs(dump_path, exist_ok=True)
         filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
@@ -475,8 +476,17 @@ class RayPPOTrainer:
             if len(v) == n:
                 base_data[k] = v
 
+        indices = list(range(n))
+        if max_rows is not None and max_rows > 0 and n > max_rows:
+            import numpy as np
+
+            indices.sort(key=lambda i: inputs[i])
+            rng = np.random.RandomState(42)
+            rng.shuffle(indices)
+            indices = indices[:max_rows]
+
         lines = []
-        for i in range(n):
+        for i in indices:
             entry = {k: v[i] for k, v in base_data.items()}
             lines.append(json.dumps(entry, ensure_ascii=False))
 
@@ -686,10 +696,14 @@ class RayPPOTrainer:
         response_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in responses]
         prompt_texts = [msgs[-1]["content"] for msgs in batch.non_tensor_batch["raw_prompt"]]
         batch_size = batch.batch.batch_size[0]
+        include_constitution = self_distillation_cfg.get("include_constitution", False)
+        constitution_text = None
+        if include_constitution:
+            constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
 
         # Extract feedback if available and include_environment_feedback is enabled
         feedback_list = self._collect_feedback(
-            include_environment_feedback=self_distillation_cfg.include_environment_feedback,
+            include_environment_feedback=self_distillation_cfg.include_environment_feedback and not include_constitution,
             reward_extra_infos_dict=reward_extra_infos_dict,
             batch_size=batch_size,
         )
@@ -709,6 +723,16 @@ class RayPPOTrainer:
 
         def _build_teacher_message(i: int) -> list[dict]:
             system_messages = batch.non_tensor_batch["raw_prompt"][i][:-1]
+
+            if include_constitution:
+                teacher_prompt = build_teacher_prompt(
+                    question=prompt_texts[i],
+                    constitution=constitution_text,
+                )
+                return system_messages + [
+                    {"role": "user", "content": teacher_prompt},
+                ]
+
             has_solution = solution_strs[i] is not None
             has_feedback = feedback_list[i] is not None
             feedback_only_without_solution = self_distillation_cfg.get("environment_feedback_only_without_solution", False)
@@ -770,12 +794,15 @@ class RayPPOTrainer:
             for i in range(batch_size)
         ]
 
-        # self_distillation_mask is True if sample has a solution OR feedback is used (i.e., will get a reprompted message)
-        self_distillation_mask = torch.tensor(
-            [solution_strs[i] is not None or feedback_used[i] for i in range(batch_size)],
-            dtype=torch.float32,
-            device=device
-        )
+        if include_constitution:
+            self_distillation_mask = torch.ones(batch_size, dtype=torch.float32, device=device)
+        else:
+            # self_distillation_mask is True if sample has a solution OR feedback is used (i.e., will get a reprompted message)
+            self_distillation_mask = torch.tensor(
+                [solution_strs[i] is not None or feedback_used[i] for i in range(batch_size)],
+                dtype=torch.float32,
+                device=device
+            )
 
         uids = set(batch.non_tensor_batch["uid"])
         num_with_feedback_available = sum(1 for f in feedback_list if f is not None)
@@ -787,6 +814,7 @@ class RayPPOTrainer:
             "self_distillation/feedback_available_fraction": num_with_feedback_available / batch_size,
             "self_distillation/feedback_used_fraction": num_with_feedback_used / batch_size,
             "self_distillation/reprompt_sample_fraction": self_distillation_mask.float().mean().item(),
+            "self_distillation/constitution_prompt_fraction": float(include_constitution),
         }
         return DataProto.from_dict(tensors={
             "teacher_input_ids": teacher_input_ids,
@@ -813,6 +841,7 @@ class RayPPOTrainer:
         return gen_batch
 
     def _validate(self, merged: bool = False):
+        generation_only = self.config.trainer.get("validation_generations_only", False)
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
@@ -823,6 +852,13 @@ class RayPPOTrainer:
         sample_scores = []
         sample_turns = []
         sample_uids = []
+        sample_teacher_prompts = []
+
+        self_distillation_cfg = self.config.actor_rollout_ref.actor.get("self_distillation", {})
+        val_include_constitution = self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo" and self_distillation_cfg.get("include_constitution", False)
+        val_constitution_text = None
+        if val_include_constitution:
+            val_constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -889,33 +925,54 @@ class RayPPOTrainer:
             sample_inputs.extend(input_texts)
             sample_uids.extend(test_batch.non_tensor_batch["uid"])
 
-            # evaluate using reward_function
-            result = self._compute_or_extract_reward(test_batch, reward_fn=self.val_reward_fn, return_dict=True)
-            reward_tensor = result["reward_tensor"]
-            scores = reward_tensor.sum(-1).cpu().tolist()
-            sample_scores.extend(scores)
+            if val_include_constitution:
+                raw_prompts = test_batch.non_tensor_batch["raw_prompt"]
+                teacher_prompt_texts = [
+                    build_teacher_prompt(
+                        question=messages[-1]["content"],
+                        constitution=val_constitution_text,
+                    )
+                    for messages in raw_prompts
+                ]
+            else:
+                teacher_prompt_texts = [None] * len(input_texts)
+            sample_teacher_prompts.extend(teacher_prompt_texts)
 
-            reward_extra_infos_dict["reward"].extend(scores)
-            reward_extra_info = result.get("reward_extra_info", {})
-            for key, values in reward_extra_info.items():
-                if key not in reward_extra_infos_dict:
-                    reward_extra_infos_dict[key] = []
-                if isinstance(values, np.ndarray):
-                    reward_extra_infos_dict[key].extend(values.tolist())
-                else:
-                    reward_extra_infos_dict[key].extend(values if isinstance(values, list) else [values])
+            if generation_only:
+                scores = [None] * len(output_texts)
+                sample_scores.extend(scores)
+            else:
+                # evaluate using reward_function
+                result = self._compute_or_extract_reward(test_batch, reward_fn=self.val_reward_fn, return_dict=True)
+                reward_tensor = result["reward_tensor"]
+                scores = reward_tensor.sum(-1).cpu().tolist()
+                sample_scores.extend(scores)
+
+                reward_extra_infos_dict["reward"].extend(scores)
+                reward_extra_info = result.get("reward_extra_info", {})
+                for key, values in reward_extra_info.items():
+                    if key not in reward_extra_infos_dict:
+                        reward_extra_infos_dict[key] = []
+                    if isinstance(values, np.ndarray):
+                        reward_extra_infos_dict[key].extend(values.tolist())
+                    else:
+                        reward_extra_infos_dict[key].extend(values if isinstance(values, list) else [values])
+
+                data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * len(scores)))
 
             # collect num_turns of each prompt
             if "__num_turns__" in test_batch.non_tensor_batch:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
-            data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
-
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
+
+        if any(prompt is not None for prompt in sample_teacher_prompts):
+            reward_extra_infos_dict["teacher_prompt"] = sample_teacher_prompts
 
         # dump generations
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
+            dump_rows = self.config.trainer.log_val_generations if self.config.trainer.log_val_generations > 0 else None
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,
@@ -923,10 +980,24 @@ class RayPPOTrainer:
                 scores=sample_scores,
                 reward_extra_infos_dict=reward_extra_infos_dict,
                 dump_path=val_data_dir,
+                max_rows=dump_rows,
             )
 
         for key_info, lst in reward_extra_infos_dict.items():
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
+
+        if generation_only:
+            metric_dict = {
+                "val-inspect/generation_only": 1.0,
+                "val-inspect/num_samples": len(sample_outputs),
+                "val-inspect/num_unique_prompts": len(set(sample_uids)),
+            }
+            if len(sample_turns) > 0:
+                sample_turns_array = np.concatenate(sample_turns)
+                metric_dict["val-aux/num_turns/min"] = sample_turns_array.min()
+                metric_dict["val-aux/num_turns/max"] = sample_turns_array.max()
+                metric_dict["val-aux/num_turns/mean"] = sample_turns_array.mean()
+            return metric_dict
 
         if merged:
             print("_merge_validation_results validate result will be merged")
@@ -1577,8 +1648,8 @@ class RayPPOTrainer:
         current_epoch = self.global_steps // len(self.train_dataloader)
 
         # perform validation before training
-        # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
+        validation_generations_only = self.config.trainer.get("validation_generations_only", False)
+        if (self.val_reward_fn is not None or validation_generations_only) and self.config.trainer.get("val_before_train", True):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
@@ -1705,24 +1776,36 @@ class RayPPOTrainer:
                         images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
                     batch.meta_info["images_seqlens"] = images_seqlens_all
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        # compute reward model score
-                        if self.use_rm and "rm_scores" not in batch.batch.keys():
-                            if not self.use_reward_loop:
-                                reward_tensor = self.rm_wg.compute_rm_score(batch)
-                            else:
-                                assert self.reward_loop_manager is not None, "RewardLoopManager is None"
-                                reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
-                            batch = batch.union(reward_tensor)
+                        sdpo_constitutional_training = (
+                            self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo"
+                            and self.config.actor_rollout_ref.actor.get("self_distillation", {}).get("include_constitution", False)
+                        )
 
-                        # Compute or extract reward for training
-                        if self.config.reward_model.launch_reward_fn_async:
-                            future_reward = compute_reward_async.remote(
-                                data=batch, config=self.config, tokenizer=self.tokenizer
-                            )
+                        # Constitutional SDPO uses dense teacher supervision and does not require
+                        # an external reward/judge during training.
+                        if sdpo_constitutional_training:
+                            reward_tensor = torch.zeros_like(batch.batch["responses"], dtype=torch.float32)
+                            reward_extra_infos_dict = {}
+                            metrics["self_distillation/reward_bypass"] = 1.0
                         else:
-                            reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
-                                batch, reward_fn=self.reward_fn, return_dict=False
-                            )
+                            # compute reward model score
+                            if self.use_rm and "rm_scores" not in batch.batch.keys():
+                                if not self.use_reward_loop:
+                                    reward_tensor = self.rm_wg.compute_rm_score(batch)
+                                else:
+                                    assert self.reward_loop_manager is not None, "RewardLoopManager is None"
+                                    reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
+                                batch = batch.union(reward_tensor)
+
+                            # Compute or extract reward for training
+                            if self.config.reward_model.launch_reward_fn_async:
+                                future_reward = compute_reward_async.remote(
+                                    data=batch, config=self.config, tokenizer=self.tokenizer
+                                )
+                            else:
+                                reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
+                                    batch, reward_fn=self.reward_fn, return_dict=False
+                                )
 
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
@@ -1780,7 +1863,7 @@ class RayPPOTrainer:
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
                         reward_extra_infos_dict: dict[str, list]
-                        if self.config.reward_model.launch_reward_fn_async:
+                        if self.config.reward_model.launch_reward_fn_async and not sdpo_constitutional_training:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
                         batch.batch["token_level_scores"] = reward_tensor
 
@@ -1854,7 +1937,7 @@ class RayPPOTrainer:
 
                 # validate
                 if (
-                    self.val_reward_fn is not None
+                    (self.val_reward_fn is not None or self.config.trainer.get("validation_generations_only", False))
                     and self.config.trainer.test_freq > 0
                     and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
                 ):

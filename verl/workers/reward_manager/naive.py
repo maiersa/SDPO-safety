@@ -76,9 +76,14 @@ class NaiveRewardManager(AbstractRewardManager):
 
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
-            extra_info = data_item.non_tensor_batch.get("extra_info", {})
+            extra_info = dict(data_item.non_tensor_batch.get("extra_info", {}) or {})
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
             rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
+            extra_info.setdefault("prompt", prompt_str)
+            extra_info.setdefault("question", prompt_str)
+            raw_prompt = data_item.non_tensor_batch.get("raw_prompt", None)
+            if raw_prompt is not None:
+                extra_info.setdefault("raw_prompt", raw_prompt)
             extra_info["num_turns"] = num_turns
             extra_info["rollout_reward_scores"] = rollout_reward_scores
             extra_info["truncated"] = not (valid_response_ids == self.tokenizer.eos_token_id).any().item()
