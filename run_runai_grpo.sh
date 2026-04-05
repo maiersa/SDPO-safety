@@ -19,6 +19,10 @@ set -euo pipefail
 #   LOG_DIR                  (default: /dlabscratch1/${USER}/output)
 #   CKPT_DIR                 (default: /dlabscratch1/${USER}/checkpoints)
 #   TRAINER_GPUS_PER_NODE    (default: 1)
+#   JUDGE_PROVIDER            (optional: openai|anthropic)
+#   JUDGE_MODEL               (optional: e.g. gpt-4.1-mini)
+#   OPENAI_API_KEY            (optional: forwarded to job if set)
+#   ANTHROPIC_API_KEY         (optional: forwarded to job if set)
 #   DRY_RUN                  (default: false)
 #   WORKER_SCRIPT            (default: /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh)
 
@@ -122,6 +126,12 @@ if [[ "$RUNAI_LARGE_SHM" == "true" ]]; then
     RUNAI_CMD+=(--large-shm)
 fi
 
+# Forward judge settings/secrets from local shell to container without writing them to disk.
+[[ -n "${JUDGE_PROVIDER:-}" ]] && RUNAI_CMD+=(--environment "JUDGE_PROVIDER=${JUDGE_PROVIDER}")
+[[ -n "${JUDGE_MODEL:-}" ]] && RUNAI_CMD+=(--environment "JUDGE_MODEL=${JUDGE_MODEL}")
+[[ -n "${OPENAI_API_KEY:-}" ]] && RUNAI_CMD+=(--environment "OPENAI_API_KEY=${OPENAI_API_KEY}")
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] && RUNAI_CMD+=(--environment "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+
 RUNAI_CMD+=(-- bash -lc "$RUN_CMD")
 
 echo "----------------------------------------------------------------"
@@ -135,6 +145,8 @@ echo "GPUs: $RUNAI_GPU (trainer.n_gpus_per_node=$TRAINER_GPUS_PER_NODE)"
 echo "Conda env: $CONDA_ENV"
 echo "Repo dir: $REPO_DIR"
 echo "Worker script: $WORKER_SCRIPT"
+echo "Judge provider: ${JUDGE_PROVIDER:-not-set}"
+echo "Judge model: ${JUDGE_MODEL:-not-set}"
 echo "----------------------------------------------------------------"
 
 if [[ "$DRY_RUN" == "true" ]]; then
