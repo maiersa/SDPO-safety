@@ -1,8 +1,8 @@
 ================================================================================
-SDPO-SAFETY: GRPO Training with RunAI - Quick Start Commands
+SDPO-SAFETY: RUNAI QUICK COMMANDS
 ================================================================================
 
-ONE-TIME SETUP (create persistent conda environment on scratch)
+ONE-TIME SETUP
 ================================================================================
 
 source /opt/conda/etc/profile.d/conda.sh
@@ -11,17 +11,10 @@ conda create -y -p /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo python=3.12
 conda activate /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo
 python -m pip install --upgrade pip
 
-INSTALL DEPENDENCIES
-================================================================================
-
 cd /dlabscratch1/samaier/projects/SDPO-safety
-
 pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
 pip install -r requirements.txt
-
 pip install -e .
-
 pip install "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl"
 
 VERIFY INSTALLATION
@@ -32,33 +25,148 @@ source /opt/conda/etc/profile.d/conda.sh && conda activate /mnt/dlabscratch1/sam
 Expected output:
 torch 2.5.1+cu124 flash_attn 2.8.3
 
-
-SUBMIT GRPO JOB (Method 1: Using run_runai_grpo.sh)
+DATA PREPROCESSING
 ================================================================================
 
-cd /dlabscratch1/samaier/projects/SDPO-safety && CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo bash run_runai_grpo.sh sdpo
+cd /dlabscratch1/${USER}/projects/SDPO-safety
+python data/preprocess.py --data_source datasets/tooluse
 
-
-SUBMIT GRPO JOB (Method 2: Direct rs command)
+COMMON PATHS
 ================================================================================
 
-rs grpo-${USER}-sdpo --gpu 1.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env USER=$USER CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo CONFIG_NAME=baseline_grpo DATA_PATH=datasets/tooluse SUFFIX=sdpo REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety LOG_DIR=/dlabscratch1/${USER}/output CKPT_DIR=/dlabscratch1/${USER}/checkpoints TRAINER_GPUS_PER_NODE=1 bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
-rs grpo-${USER}-sdpo --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env USER=$USER CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo CONFIG_NAME=baseline_grpo DATA_PATH=datasets/tooluse SUFFIX=sdpo REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety LOG_DIR=/dlabscratch1/${USER}/output CKPT_DIR=/dlabscratch1/${USER}/checkpoints TRAINER_GPUS_PER_NODE=1 WANDB_ENTITY=samaier-epfl bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
-rs grpo-${USER}-sdpo --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env USER=$USER CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo CONFIG_NAME=baseline_grpo DATA_PATH=datasets/tooluse SUFFIX=sdpo REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety LOG_DIR=/dlabscratch1/${USER}/output CKPT_DIR=/dlabscratch1/${USER}/checkpoints TRAINER_GPUS_PER_NODE=4 WANDB_ENTITY=samaier-epfl bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo
+LOG_DIR=/dlabscratch1/${USER}/output
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints
+DATA_PATH=datasets/tooluse
+MODEL_PATH=Qwen/Qwen2.5-7B-Instruct
+WANDB_ENTITY=samaier-epfl
 
-MONITOR JOB STATUS
+GRPO: DIRECT RS COMMAND (4 GPUS)
 ================================================================================
 
-List all jobs:
+rs grpo-${USER}-tooluse --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=baseline_grpo \
+DATA_PATH=datasets/tooluse \
+SUFFIX=tooluse \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=8 \
+MINI_BATCH_SIZE=8 \
+LR=1e-5 \
+MODEL_PATH=Qwen/Qwen2.5-7B-Instruct \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+
+SDPO: DIRECT RS COMMAND (4 GPUS)
+================================================================================
+
+rs sdpo-${USER}-tooluse --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo \
+DATA_PATH=datasets/tooluse \
+SUFFIX=tooluse \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=32 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+MODEL_PATH=Qwen/Qwen2.5-7B-Instruct \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+GRPO: DIRECT RS COMMAND (1 GPU)
+================================================================================
+
+rs grpo-${USER}-tooluse --gpu 1.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=baseline_grpo \
+DATA_PATH=datasets/tooluse \
+SUFFIX=tooluse \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=8 \
+MINI_BATCH_SIZE=8 \
+LR=1e-5 \
+MODEL_PATH=Qwen/Qwen2.5-7B-Instruct \
+TRAINER_GPUS_PER_NODE=1 \
+WANDB_ENTITY=samaier-epfl \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+
+SDPO: DIRECT RS COMMAND (1 GPU)
+================================================================================
+
+rs sdpo-${USER}-tooluse --gpu 1.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo \
+DATA_PATH=datasets/tooluse \
+SUFFIX=tooluse \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=32 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+MODEL_PATH=Qwen/Qwen2.5-7B-Instruct \
+TRAINER_GPUS_PER_NODE=1 \
+WANDB_ENTITY=samaier-epfl \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+COMMON KNOBS TO EDIT
+================================================================================
+
+SUFFIX=...                         # experiment name suffix shown in job/run names
+DATA_PATH=...                      # dataset path
+MODEL_PATH=...                     # huggingface model path
+TRAIN_BATCH_SIZE=32
+ROLLOUT_BATCH_SIZE=8
+LR=1e-5
+TRAINER_GPUS_PER_NODE=1 or 4
+
+GRPO-ONLY KNOBS
+================================================================================
+
+MINI_BATCH_SIZE=8
+
+SDPO-ONLY KNOBS
+================================================================================
+
+PPO_MINI_BATCH_SIZE=32
+ALPHA=0.5
+DISTILLATION_TOPK=100
+DONT_REPROMPT_ON_SELF_SUCCESS=True
+
+MONITORING
+================================================================================
+
 runai list
+runai describe job <job-name> -p dlab-samaier
+runai logs <job-name> -p dlab-samaier | tail -n 200
 
-Describe specific job:
-runai describe job grpo-samaier-sdpo -p dlab-samaier
-
-View logs:
-runai logs grpo-samaier-sdpo -p dlab-samaier | tail -n 200
-
-For H100 instead of default GPU pool, add: --node-pools h100
-For more GPUs, change: --gpu 1.0 to --gpu 4.0 (etc)
-
+NOTES
 ================================================================================
+
+- These direct rs commands call runai_grpo_worker.sh or runai_sdpo_worker.sh directly.
+- They do not use run_rs_grpo_submit.sh unless you explicitly run that helper script.
+- Keep TRAINER_GPUS_PER_NODE aligned with the --gpu value for multi-GPU jobs.
+- If WANDB_ENTITY is omitted, training/verl_training.sh defaults to offline wandb mode.

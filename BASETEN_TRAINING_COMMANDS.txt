@@ -1,0 +1,549 @@
+================================================================================
+SDPO-SAFETY: BASETEN REPLICATION RUNAI QUICK COMMANDS
+================================================================================
+
+GOAL
+================================================================================
+
+Replicate Baseten "Dense, on-policy, or both?" setup (without iterative SFT):
+- GRPO (sparse on-policy RL) with external constitutional judge
+- SDPO/OPSD (dense on-policy distillation) with constitutional teacher context
+- Base model: Qwen/Qwen3-4B-Instruct-2507
+- Train data: BeaverTails safety subset
+- Eval data: BullshitBench v2 nonsense set
+
+
+ONE-TIME SETUP
+================================================================================
+
+source /opt/conda/etc/profile.d/conda.sh
+mkdir -p /mnt/dlabscratch1/samaier/conda-envs
+conda create -y -p /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo python=3.12
+conda activate /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo
+python -m pip install --upgrade pip
+
+cd /dlabscratch1/samaier/projects/SDPO-safety
+pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip install -r requirements.txt
+pip install -e .
+pip install "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl"
+
+
+VERIFY INSTALLATION
+================================================================================
+
+source /opt/conda/etc/profile.d/conda.sh && conda activate /mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo && python -c "import torch, flash_attn, verl, openai; print('torch', torch.__version__, 'flash_attn', flash_attn.__version__, 'openai', openai.__version__)"
+
+Expected output (versions may differ slightly):
+torch 2.5.1+cu124 flash_attn 2.8.3 openai 2.30.0
+
+
+SECRETS (REQUIRED FOR GRPO JUDGE)
+================================================================================
+
+# OpenAI judge (default)
+export OPENAI_API_KEY="sk-..."
+export JUDGE_PROVIDER=openai
+export JUDGE_MODEL=gpt-5.4-mini
+
+# Optional Anthropic judge alternative
+# export ANTHROPIC_API_KEY="sk-ant-..."
+# export JUDGE_PROVIDER=anthropic
+# export JUDGE_MODEL=claude-3-5-sonnet-20241022
+
+
+DATA PREPARATION
+================================================================================
+
+cd /dlabscratch1/${USER}/projects/SDPO-safety
+
+# 1) Prepare BeaverTails safety subset + parquet files for training
+bash scripts/prepare_beavertails.sh
+
+# 2) Prepare BullshitBench v2 for evaluation
+bash scripts/download_bullshitbench.sh
+
+# Optional sanity checks
+ls -lh datasets/beavertails_safety/
+ls -lh datasets/bullshitbench/
+
+
+COMMON PATHS
+================================================================================
+
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo
+LOG_DIR=/dlabscratch1/${USER}/output
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints
+DATA_PATH=datasets/beavertails_safety
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507
+WANDB_ENTITY=samaier-epfl
+OPENAI_API_KEY=$OPENAI_API_KEY
+
+# Optional validation inspection knobs
+# Set LOG_VAL_GENERATIONS > 0 to save a small deterministic subset of validation samples.
+# For constitutional SDPO, the dumped JSONL also includes the teacher prompt used for scoring.
+# Set VALIDATION_GENERATIONS_ONLY=True to skip reward/judge scoring and only save generations.
+LOG_VAL_GENERATIONS=8
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations
+VALIDATION_GENERATIONS_ONLY=False
+
+
+GRPO (BASE TEN STYLE): DIRECT RS COMMAND (4 GPUS)
+================================================================================
+
+rs grpo-const-${USER}-bt --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=baseline_grpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_grpo_full \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=4 \
+MINI_BATCH_SIZE=8 \
+LR=1e-5 \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+JUDGE_PROVIDER=openai \
+JUDGE_MODEL=gpt-5.4-mini \
+OPENAI_API_KEY=$OPENAI_API_KEY \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=300 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=50 \
+VAL_GENERATION_N=4 \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+
+
+SDPO/OPSD (BASE TEN STYLE): DIRECT RS COMMAND (4 GPUS)
+================================================================================
+
+rs sdpo-const-${USER}-bt --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_sdpo_full \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=4 \
+PPO_MINI_BATCH_SIZE=32 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+OPENAI_API_KEY=$OPENAI_API_KEY \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=150 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+VALIDATION_GENERATIONS_ONLY=True \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+
+SDPO/OPSD (BASE TEN STYLE): DIRECT RS COMMAND (8 GPUS)
+================================================================================
+
+rs sdpo-const-${USER}-bt --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_sdpo_8gpu \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=150 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+TRAINER_GPUS_PER_NODE=8 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+VALIDATION_GENERATIONS_ONLY=True \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+
+GRPO (BASE TEN STYLE): DIRECT RS COMMAND (8 GPUS)
+================================================================================
+
+rs grpo-const-${USER}-bt --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=baseline_grpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_grpo_8gpu \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+MINI_BATCH_SIZE=16 \
+LR=1e-5 \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+JUDGE_PROVIDER=openai \
+JUDGE_MODEL=gpt-5.4-mini \
+OPENAI_API_KEY=$OPENAI_API_KEY \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=300 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=50 \
+VAL_GENERATION_N=4 \
+TRAINER_GPUS_PER_NODE=8 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+
+GRPO (BASE TEN STYLE): DIRECT RS COMMAND (1 GPU)
+================================================================================
+
+rs grpo-const-${USER}-bt --gpu 1.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=baseline_grpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_grpo_1gpu \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=16 \
+ROLLOUT_BATCH_SIZE=2 \
+MINI_BATCH_SIZE=4 \
+LR=1e-5 \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+JUDGE_PROVIDER=openai \
+JUDGE_MODEL=gpt-5.4-mini \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=50 \
+VAL_GENERATION_N=4 \
+TRAINER_GPUS_PER_NODE=1 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+
+
+SDPO/OPSD (BASE TEN STYLE): DIRECT RS COMMAND (1 GPU)
+================================================================================
+
+rs sdpo-const-${USER}-bt --gpu 1.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_sdpo_1gpu \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=16 \
+ROLLOUT_BATCH_SIZE=2 \
+PPO_MINI_BATCH_SIZE=8 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+OPENAI_API_KEY=$OPENAI_API_KEY \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+TRAINER_GPUS_PER_NODE=1 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+VALIDATION_GENERATIONS_ONLY=True \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+
+SMOKE TESTS (RECOMMENDED FIRST)
+================================================================================
+
+# Validation inspection notes
+# - LOG_VAL_GENERATIONS controls how many validation samples are logged and dumped per validation pass.
+# - VALIDATION_DATA_DIR controls where JSONL inspection files are written.
+# - For constitutional SDPO, dumped rows include: input, output, score, and teacher_prompt.
+# - For GRPO, dumped rows include the student generations and judge-derived score fields.
+
+
+# GRPO smoke test (tiny subset, full pipeline validation)
+rs grpo-smoke-${USER}-bt --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=baseline_grpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=smoke \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=8 \
+ROLLOUT_BATCH_SIZE=2 \
+MINI_BATCH_SIZE=4 \
+LR=1e-5 \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+JUDGE_PROVIDER=openai \
+JUDGE_MODEL=gpt-5.4-mini \
+OPENAI_API_KEY=$OPENAI_API_KEY \
+TRAIN_MAX_SAMPLES=32 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=50 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=2 \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_grpo_worker.sh
+
+# SDPO smoke test (tiny subset, full pipeline validation)
+rs sdpo-smoke-${USER}-bt --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo_constitutional \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=smoke \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=8 \
+ROLLOUT_BATCH_SIZE=2 \
+PPO_MINI_BATCH_SIZE=8 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+TRAIN_MAX_SAMPLES=32 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=50 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=2 \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+VALIDATION_GENERATIONS_ONLY=True \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+
+COMMON KNOBS TO EDIT
+================================================================================
+
+SUFFIX=...                         # experiment name suffix shown in job/run names
+DATA_PATH=...                      # training dataset path (default: datasets/beavertails_safety)
+MODEL_PATH=...                     # huggingface model path (default: Qwen/Qwen3-4B-Instruct-2507)
+TRAIN_BATCH_SIZE=...
+ROLLOUT_BATCH_SIZE=...
+LR=...
+TRAINER_GPUS_PER_NODE=1 or 4
+
+SMOKE / SPEED KNOBS
+================================================================================
+
+TRAIN_MAX_SAMPLES=32               # -1 means full train set
+VAL_MAX_SAMPLES=8                  # small judged validation set for GRPO cost control
+TOTAL_TRAINING_STEPS=10            # hard cap on updates
+TOTAL_EPOCHS=1                     # default epoch budget
+VAL_BEFORE_TRAIN=True
+TEST_FREQ=50                       # use sparse judged validation for full GRPO runs
+VAL_GENERATION_N=4                 # validation generations per prompt for GRPO
+
+SDPO METRIC CHEAT SHEET
+================================================================================
+
+Watch these for constitutional SDPO:
+- actor/pg_loss                     # main optimization signal; should stay finite and non-zero
+- actor/grad_norm                   # should stay finite; persistent spikes or zeros are bad
+- actor/entropy                     # helps spot collapse/overconfidence
+- self_distillation/reward_bypass   # should stay 1.0 in constitutional SDPO
+- self_distillation/reprompt_sample_fraction      # should stay near 1.0 here
+- self_distillation/constitution_prompt_fraction  # should stay 1.0 here
+- self_distillation/empty_target_batch            # should stay 0.0
+- training/rollout_actor_probs_pearson_corr       # should stay very close to 1.0
+- rollout_corr/*                    # rollout consistency checks
+
+Expected to stay ~0 in this SDPO setup:
+- critic/rewards/*
+- critic/advantages/*
+- critic/returns/*
+
+8-GPU SCALING NOTES
+================================================================================
+
+For 8 GPUs on a single node, change both:
+- rs ... --gpu 8.0
+- TRAINER_GPUS_PER_NODE=8
+
+Usually also scale these up, otherwise GPU utilization stays poor:
+- TRAIN_BATCH_SIZE=64               # start here for 8 GPUs
+- PPO_MINI_BATCH_SIZE=64            # or 32 if memory becomes tight
+- ROLLOUT_BATCH_SIZE=8              # start here for 8 GPUs
+
+Keep these unchanged initially:
+- tensor_model_parallel_size=1      # model fits per GPU already
+- VALIDATION_GENERATIONS_ONLY=True  # SDPO should not use external judge
+
+Recommended first 8-GPU SDPO full-run settings:
+- TRAIN_BATCH_SIZE=64
+- PPO_MINI_BATCH_SIZE=64
+- ROLLOUT_BATCH_SIZE=8
+- TEST_FREQ=10 or 25
+- LOG_VAL_GENERATIONS=8
+
+GRPO-ONLY KNOBS
+================================================================================
+
+MINI_BATCH_SIZE=8
+JUDGE_PROVIDER=openai
+JUDGE_MODEL=gpt-5.4-mini
+OPENAI_API_KEY=$OPENAI_API_KEY
+
+SDPO-ONLY KNOBS
+================================================================================
+
+PPO_MINI_BATCH_SIZE=32
+ALPHA=0.5
+DISTILLATION_TOPK=100
+DONT_REPROMPT_ON_SELF_SUCCESS=True
+
+
+MONITORING
+================================================================================
+
+runai list
+runai describe job <job-name> -p dlab-samaier
+runai logs <job-name> -p dlab-samaier | tail -n 200
+
+
+POST-TRAIN BULLSHITBENCH EVALUATION
+================================================================================
+
+# BullshitBench nonsense set is prepared by scripts/download_bullshitbench.sh.
+# Evaluate checkpoints on nonsense prompts only.
+
+# 1) Set the model/checkpoint path to evaluate.
+MODEL_TO_EVAL=<PATH_TO_TRAINED_MODEL_OR_ACTOR_CKPT>
+OUT_JSON=/dlabscratch1/${USER}/output/bullshitbench_eval_$(date +%Y%m%d_%H%M%S).json
+
+# 2) Run evaluation with OpenAI constitutional judge scoring.
+MODEL_TO_EVAL=$MODEL_TO_EVAL OUT_JSON=$OUT_JSON OPENAI_API_KEY=$OPENAI_API_KEY python - << 'PY'
+import json
+import os
+from statistics import mean
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from verl.utils.reward_score.feedback.constitution_judge import call_judge_api
+
+model_path = os.environ.get("MODEL_TO_EVAL")
+out_json = os.environ.get("OUT_JSON", "bullshitbench_eval.json")
+data_path = "datasets/bullshitbench/nonsense_questions.json"
+
+if not model_path or model_path.startswith("<PATH_TO"):
+	raise SystemExit("Set MODEL_TO_EVAL to a real checkpoint/model path before running.")
+
+with open(data_path, "r") as f:
+	data = json.load(f)
+
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+	model_path,
+	trust_remote_code=True,
+	torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+	device_map="auto",
+)
+
+results = []
+for i, item in enumerate(data):
+	q = item.get("question") or item.get("prompt") or ""
+	if not q:
+		continue
+	inputs = tokenizer(q, return_tensors="pt").to(model.device)
+	with torch.no_grad():
+		out = model.generate(
+			**inputs,
+			max_new_tokens=256,
+			temperature=0.7,
+			top_p=0.95,
+			do_sample=True,
+		)
+	text = tokenizer.decode(out[0], skip_special_tokens=True)
+	resp = text[len(q):].strip() if text.startswith(q) else text.strip()
+	judge = call_judge_api(q, resp)
+	results.append({
+		"id": item.get("id", i),
+		"correctness": judge["correctness"],
+		"tone": judge["tone"],
+		"combined_score": judge["combined_score"],
+		"question": q,
+		"response": resp,
+	})
+	if (i + 1) % 10 == 0:
+		print(f"Scored {i + 1}/{len(data)} prompts")
+
+summary = {
+	"model_path": model_path,
+	"num_scored": len(results),
+	"mean_correctness": mean(r["correctness"] for r in results) if results else 0.0,
+	"mean_tone": mean(r["tone"] for r in results) if results else 0.0,
+	"mean_combined": mean(r["combined_score"] for r in results) if results else 0.0,
+}
+
+with open(out_json, "w") as f:
+	json.dump({"summary": summary, "results": results}, f, indent=2)
+
+print("\nBullshitBench evaluation summary:")
+for k, v in summary.items():
+	print(f"  {k}: {v}")
+print(f"\nDetailed results: {out_json}")
+PY
+
+
+NOTES
+================================================================================
+
+- These direct rs commands call runai_grpo_worker.sh or runai_sdpo_worker.sh directly.
+- They do not require run_runai_* wrappers, though wrappers remain available.
+- Keep TRAINER_GPUS_PER_NODE aligned with the --gpu value for multi-GPU jobs.
+- If WANDB_ENTITY is omitted, training/verl_training.sh defaults to offline wandb mode.
+- For GRPO, judge failures are logged with running failure counts in constitution_judge.py.
