@@ -57,6 +57,7 @@ class SelfDistillationConfig(BaseConfig):
         solution_template (str): Template for formatting solution section. Uses {successful_previous_attempt} placeholder.
         feedback_template (str): Template for formatting feedback section. Uses {feedback_raw} placeholder.
         include_constitution (bool): Whether to prepend privileged constitutional context to the teacher prompt.
+        rollout_source (str): Which policy context generates trajectories for SDPO. Options: "student" or "teacher".
         constitution_path (Optional[str]): Optional override path for the constitution text file.
         include_environment_feedback (bool): Whether to include environment feedback in reprompting for wrong attempts.
         environment_feedback_only_without_solution (bool): If True, only use feedback when no solution is available (ignore feedback when solution exists).
@@ -91,6 +92,7 @@ class SelfDistillationConfig(BaseConfig):
         "{feedback_raw}\n\n"
     )
     include_constitution: bool = False
+    rollout_source: str = "student"
     constitution_path: Optional[str] = None
     include_environment_feedback: bool = False
     environment_feedback_only_without_solution: bool = False
@@ -114,6 +116,12 @@ class SelfDistillationConfig(BaseConfig):
             )
         if self.is_clip is not None and self.is_clip <= 0:
             raise ValueError(f"self_distillation.is_clip must be positive, got {self.is_clip}")
+        valid_rollout_sources = ["student", "teacher"]
+        if self.rollout_source not in valid_rollout_sources:
+            raise ValueError(
+                "self_distillation.rollout_source must be one of "
+                f"{valid_rollout_sources}, got {self.rollout_source}"
+            )
 
 
 @dataclass

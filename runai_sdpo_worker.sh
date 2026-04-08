@@ -15,6 +15,7 @@ LR=${LR:-"1e-5"}
 ALPHA=${ALPHA:-"0.5"}
 DISTILLATION_TOPK=${DISTILLATION_TOPK:-100}
 DONT_REPROMPT_ON_SELF_SUCCESS=${DONT_REPROMPT_ON_SELF_SUCCESS:-"True"}
+ROLLOUT_SOURCE=${ROLLOUT_SOURCE:-"student"}
 MODEL_PATH=${MODEL_PATH:-"Qwen/Qwen2.5-7B-Instruct"}
 
 # Optional smoke-test knobs
@@ -163,6 +164,7 @@ actor_rollout_ref.actor.optim.lr=$LR \
 actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE \
 actor_rollout_ref.actor.self_distillation.distillation_topk=$DISTILLATION_TOPK \
 actor_rollout_ref.actor.self_distillation.dont_reprompt_on_self_success=$DONT_REPROMPT_ON_SELF_SUCCESS \
+actor_rollout_ref.actor.self_distillation.rollout_source=$ROLLOUT_SOURCE \
 actor_rollout_ref.actor.self_distillation.alpha=$ALPHA \
 actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
 actor_rollout_ref.model.path=$MODEL_PATH \

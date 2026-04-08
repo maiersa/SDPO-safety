@@ -359,6 +359,7 @@ class RayPPOTrainer:
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
         )
+        self.generation_dump_run_id = self._build_generation_dump_run_id()
 
         # if ref_in_actor is True, the reference policy will be actor without lora applied
         lora_rank = config.actor_rollout_ref.model.get("lora", {}).get("rank", 0)
@@ -458,10 +459,23 @@ class RayPPOTrainer:
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
+    def _sanitize_generation_dump_component(self, value: Any) -> str:
+        value = str(value).strip()
+        sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", value)
+        sanitized = sanitized.strip("-._")
+        return sanitized or "run"
+
+    def _build_generation_dump_run_id(self) -> str:
+        experiment_name = self.config.trainer.get("experiment_name", None) or "run"
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+        unique_suffix = uuid.uuid4().hex[:8]
+        return f"{self._sanitize_generation_dump_component(experiment_name)}_{timestamp}_{unique_suffix}"
+
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path, max_rows=None):
         """Dump rollout/validation samples as JSONL."""
-        os.makedirs(dump_path, exist_ok=True)
-        filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
+        run_dump_path = os.path.join(dump_path, self.generation_dump_run_id)
+        os.makedirs(run_dump_path, exist_ok=True)
+        filename = os.path.join(run_dump_path, f"step_{self.global_steps}.jsonl")
 
         n = len(inputs)
         base_data = {
@@ -679,6 +693,150 @@ class RayPPOTrainer:
         return solution_str
 
 
+    def _get_self_distillation_cfg(self):
+        return self.config.actor_rollout_ref.actor.get("self_distillation", None)
+
+    def _get_sdpo_rollout_source(self) -> str:
+        self_distillation_cfg = self._get_self_distillation_cfg()
+        if self_distillation_cfg is None:
+            return "student"
+        return self_distillation_cfg.get("rollout_source", "student")
+
+    def _uses_teacher_rollout_for_sdpo(self) -> bool:
+        return (
+            self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo"
+            and self.config.actor_rollout_ref.actor.get("self_distillation", {}).get("include_constitution", False)
+            and self._get_sdpo_rollout_source() == "teacher"
+        )
+
+    def _build_constitution_teacher_messages(
+        self, raw_prompts: list[list[dict[str, str]]], constitution_text: str
+    ) -> list[list[dict[str, str]]]:
+        teacher_messages = []
+        for messages in raw_prompts:
+            system_messages = list(messages[:-1])
+            teacher_prompt = build_teacher_prompt(
+                question=messages[-1]["content"],
+                constitution=constitution_text,
+            )
+            teacher_messages.append(system_messages + [{"role": "user", "content": teacher_prompt}])
+        return teacher_messages
+
+    def _tokenize_messages_for_generation(self, messages: list[list[dict[str, str]]], max_length: int) -> dict[str, torch.Tensor]:
+        apply_chat_template_kwargs = dict(self.config.data.apply_chat_template_kwargs or {})
+        tokenized = self.tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+            return_dict=True,
+            tokenize=True,
+            **apply_chat_template_kwargs,
+        )
+        return {
+            "input_ids": tokenized["input_ids"],
+            "attention_mask": tokenized["attention_mask"],
+            "position_ids": compute_position_id_with_mask(tokenized["attention_mask"]),
+        }
+
+    def _build_teacher_rollout_gen_batch(self, gen_batch: DataProto) -> DataProto:
+        self_distillation_cfg = self._get_self_distillation_cfg()
+        if self_distillation_cfg is None:
+            return gen_batch
+
+        constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
+        raw_prompts = [list(messages) for messages in gen_batch.non_tensor_batch["raw_prompt"]]
+        teacher_messages = self._build_constitution_teacher_messages(raw_prompts, constitution_text)
+        max_prompt_len = self_distillation_cfg.get(
+            "max_reprompt_len", self.config.actor_rollout_ref.rollout.prompt_length
+        )
+        teacher_prompt_tensors = self._tokenize_messages_for_generation(teacher_messages, max_prompt_len)
+
+        teacher_tensors = None
+        if gen_batch.batch is not None:
+            teacher_tensors = {
+                key: value.clone() if torch.is_tensor(value) else value
+                for key, value in gen_batch.batch.items()
+            }
+            teacher_tensors["input_ids"] = teacher_prompt_tensors["input_ids"]
+            teacher_tensors["attention_mask"] = teacher_prompt_tensors["attention_mask"]
+            teacher_tensors["position_ids"] = teacher_prompt_tensors["position_ids"]
+            if "prompts" in teacher_tensors:
+                teacher_tensors["prompts"] = teacher_prompt_tensors["input_ids"]
+
+        teacher_non_tensors = {
+            key: value.copy() if isinstance(value, np.ndarray) else deepcopy(value)
+            for key, value in (gen_batch.non_tensor_batch or {}).items()
+        }
+        teacher_non_tensors["raw_prompt"] = np.array(teacher_messages, dtype=object)
+        teacher_meta_info = dict(gen_batch.meta_info or {})
+        teacher_meta_info["sdpo_rollout_source"] = "teacher"
+        return DataProto.from_dict(tensors=teacher_tensors, non_tensors=teacher_non_tensors, meta_info=teacher_meta_info)
+
+    def _merge_teacher_rollout_output_into_student_batch(self, batch: DataProto, rollout_output: DataProto) -> DataProto:
+        responses = rollout_output.batch["responses"]
+        response_length = responses.size(1)
+        response_attention_mask = rollout_output.batch["attention_mask"][:, -response_length:]
+
+        if batch.batch is not None and "input_ids" in batch.batch.keys():
+            student_prompt_ids = batch.batch["input_ids"]
+            student_prompt_attention_mask = batch.batch["attention_mask"]
+            student_prompts = batch.batch.get("prompts", student_prompt_ids)
+        else:
+            self_distillation_cfg = self._get_self_distillation_cfg() or {}
+            raw_prompts = [list(messages) for messages in batch.non_tensor_batch["raw_prompt"]]
+            max_prompt_len = self.config.actor_rollout_ref.rollout.prompt_length
+            if self_distillation_cfg.get("max_reprompt_len", None) is not None:
+                max_prompt_len = min(max_prompt_len, self_distillation_cfg.get("max_reprompt_len"))
+            student_prompt_tensors = self._tokenize_messages_for_generation(raw_prompts, max_prompt_len)
+            student_prompt_ids = student_prompt_tensors["input_ids"]
+            student_prompt_attention_mask = student_prompt_tensors["attention_mask"]
+            student_prompts = student_prompt_ids
+
+        if student_prompt_ids.size(0) != responses.size(0):
+            if responses.size(0) % student_prompt_ids.size(0) != 0:
+                raise ValueError(
+                    f"Teacher rollout batch size {responses.size(0)} is not divisible by student prompt batch size {student_prompt_ids.size(0)}"
+                )
+            repeat_factor = responses.size(0) // student_prompt_ids.size(0)
+            student_prompt_ids = student_prompt_ids.repeat_interleave(repeat_factor, dim=0)
+            student_prompt_attention_mask = student_prompt_attention_mask.repeat_interleave(repeat_factor, dim=0)
+            student_prompts = student_prompts.repeat_interleave(repeat_factor, dim=0)
+
+        student_input_ids = torch.cat([student_prompt_ids, responses], dim=1)
+        student_attention_mask = torch.cat([student_prompt_attention_mask, response_attention_mask], dim=1)
+        student_position_ids = compute_position_id_with_mask(student_attention_mask)
+
+        tensors = {
+            key: value
+            for key, value in rollout_output.batch.items()
+            if key not in {"prompts", "input_ids", "attention_mask", "position_ids"}
+        }
+        tensors["prompts"] = student_prompts
+        tensors["input_ids"] = student_input_ids
+        tensors["attention_mask"] = student_attention_mask
+        tensors["position_ids"] = student_position_ids
+
+        merged_output = DataProto.from_dict(tensors=tensors, meta_info=rollout_output.meta_info)
+        merged_non_tensors = {
+            key: value.copy() if isinstance(value, np.ndarray) else deepcopy(value)
+            for key, value in (rollout_output.non_tensor_batch or {}).items()
+        }
+        if batch.non_tensor_batch is not None and "raw_prompt" in batch.non_tensor_batch:
+            student_raw_prompt = batch.non_tensor_batch["raw_prompt"]
+            if len(student_raw_prompt) != responses.size(0):
+                if responses.size(0) % len(student_raw_prompt) != 0:
+                    raise ValueError(
+                        f"Teacher rollout batch size {responses.size(0)} is not divisible by raw_prompt batch size {len(student_raw_prompt)}"
+                    )
+                repeat_factor = responses.size(0) // len(student_raw_prompt)
+                student_raw_prompt = np.repeat(student_raw_prompt, repeat_factor, axis=0)
+            merged_non_tensors["raw_prompt"] = student_raw_prompt
+        merged_output.non_tensor_batch = merged_non_tensors
+        return merged_output
+
     def _maybe_build_self_distillation_batch(
         self,
         batch: DataProto,
@@ -697,6 +855,7 @@ class RayPPOTrainer:
         prompt_texts = [msgs[-1]["content"] for msgs in batch.non_tensor_batch["raw_prompt"]]
         batch_size = batch.batch.batch_size[0]
         include_constitution = self_distillation_cfg.get("include_constitution", False)
+        rollout_source = self_distillation_cfg.get("rollout_source", "student")
         constitution_text = None
         if include_constitution:
             constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
@@ -815,6 +974,7 @@ class RayPPOTrainer:
             "self_distillation/feedback_used_fraction": num_with_feedback_used / batch_size,
             "self_distillation/reprompt_sample_fraction": self_distillation_mask.float().mean().item(),
             "self_distillation/constitution_prompt_fraction": float(include_constitution),
+            "self_distillation/teacher_rollout_fraction": float(include_constitution and rollout_source == "teacher"),
         }
         return DataProto.from_dict(tensors={
             "teacher_input_ids": teacher_input_ids,
@@ -857,6 +1017,7 @@ class RayPPOTrainer:
         self_distillation_cfg = self.config.actor_rollout_ref.actor.get("self_distillation", {})
         val_include_constitution = self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo" and self_distillation_cfg.get("include_constitution", False)
         val_constitution_text = None
+        val_rollout_source = self._get_sdpo_rollout_source() if val_include_constitution else "student"
         if val_include_constitution:
             val_constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
 
@@ -883,6 +1044,8 @@ class RayPPOTrainer:
             sample_gts.extend(ground_truths)
 
             test_gen_batch = self._get_gen_batch(test_batch)
+            if val_include_constitution and val_rollout_source == "teacher":
+                test_gen_batch = self._build_teacher_rollout_gen_batch(test_gen_batch)
             test_gen_batch.meta_info = {
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
@@ -907,6 +1070,8 @@ class RayPPOTrainer:
 
             # unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+            if val_include_constitution and val_rollout_source == "teacher":
+                test_output_gen_batch = self._merge_teacher_rollout_output_into_student_batch(test_batch, test_output_gen_batch)
 
             print("validation generation end")
 
@@ -991,6 +1156,7 @@ class RayPPOTrainer:
                 "val-inspect/generation_only": 1.0,
                 "val-inspect/num_samples": len(sample_outputs),
                 "val-inspect/num_unique_prompts": len(set(sample_uids)),
+                "val-inspect/teacher_rollout": float(val_rollout_source == "teacher"),
             }
             if len(sample_turns) > 0:
                 sample_turns_array = np.concatenate(sample_turns)
@@ -1699,6 +1865,9 @@ class RayPPOTrainer:
                 )
 
                 gen_batch = self._get_gen_batch(batch)
+                teacher_rollout_for_sdpo = self._uses_teacher_rollout_for_sdpo()
+                if teacher_rollout_for_sdpo:
+                    gen_batch = self._build_teacher_rollout_gen_batch(gen_batch)
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
@@ -1717,6 +1886,9 @@ class RayPPOTrainer:
 
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+                        if teacher_rollout_for_sdpo:
+                            gen_batch_output = self._merge_teacher_rollout_output_into_student_batch(batch, gen_batch_output)
+                            metrics["self_distillation/teacher_rollout_fraction"] = 1.0
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         if self.reward_fn is None:

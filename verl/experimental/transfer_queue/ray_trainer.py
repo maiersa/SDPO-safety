@@ -22,6 +22,8 @@ import json
 import logging
 import math
 import os
+import re
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -378,6 +380,7 @@ class RayPPOTrainer:
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
         )
+        self.generation_dump_run_id = self._build_generation_dump_run_id()
 
         lora_rank = config.actor_rollout_ref.model.get("lora", {}).get("rank", 0)
         if lora_rank <= 0:
@@ -534,10 +537,23 @@ class RayPPOTrainer:
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
+    def _sanitize_generation_dump_component(self, value: Any) -> str:
+        value = str(value).strip()
+        sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", value)
+        sanitized = sanitized.strip("-._")
+        return sanitized or "run"
+
+    def _build_generation_dump_run_id(self) -> str:
+        experiment_name = self.config.trainer.get("experiment_name", None) or "run"
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+        unique_suffix = uuid.uuid4().hex[:8]
+        return f"{self._sanitize_generation_dump_component(experiment_name)}_{timestamp}_{unique_suffix}"
+
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""
-        os.makedirs(dump_path, exist_ok=True)
-        filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
+        run_dump_path = os.path.join(dump_path, self.generation_dump_run_id)
+        os.makedirs(run_dump_path, exist_ok=True)
+        filename = os.path.join(run_dump_path, f"step_{self.global_steps}.jsonl")
 
         n = len(inputs)
         base_data = {

@@ -115,6 +115,7 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=300 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=50 \
+SAVE_FREQ=50 \
 VAL_GENERATION_N=4 \
 TRAINER_GPUS_PER_NODE=4 \
 WANDB_ENTITY=samaier-epfl \
@@ -150,6 +151,43 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=150 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=10 \
+SAVE_FREQ=50 \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+VALIDATION_GENERATIONS_ONLY=True \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+
+OFF-POLICY OPSD (BASE TEN STYLE): DIRECT RS COMMAND (4 GPUS)
+================================================================================
+
+rs sdpo-offpolicy-${USER}-bt --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo_constitutional_offpolicy \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_sdpo_offpolicy_full \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=4 \
+PPO_MINI_BATCH_SIZE=32 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+ROLLOUT_SOURCE=teacher \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=150 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+SAVE_FREQ=50 \
 TRAINER_GPUS_PER_NODE=4 \
 WANDB_ENTITY=samaier-epfl \
 LOG_VAL_GENERATIONS=8 \
@@ -184,6 +222,43 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=150 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=10 \
+SAVE_FREQ=50 \
+TRAINER_GPUS_PER_NODE=8 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+VALIDATION_GENERATIONS_ONLY=True \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+
+OFF-POLICY OPSD (BASE TEN STYLE): DIRECT RS COMMAND (8 GPUS)
+================================================================================
+
+rs sdpo-offpolicy-${USER}-bt --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo_constitutional_offpolicy \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=baseten_sdpo_offpolicy_8gpu \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+ROLLOUT_SOURCE=teacher \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=150 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+SAVE_FREQ=50 \
 TRAINER_GPUS_PER_NODE=8 \
 WANDB_ENTITY=samaier-epfl \
 LOG_VAL_GENERATIONS=8 \
@@ -218,6 +293,7 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=300 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=50 \
+SAVE_FREQ=50 \
 VAL_GENERATION_N=4 \
 TRAINER_GPUS_PER_NODE=8 \
 WANDB_ENTITY=samaier-epfl \
@@ -250,6 +326,7 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=100 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=50 \
+SAVE_FREQ=50 \
 VAL_GENERATION_N=4 \
 TRAINER_GPUS_PER_NODE=1 \
 WANDB_ENTITY=samaier-epfl \
@@ -285,6 +362,7 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=100 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=10 \
+SAVE_FREQ=50 \
 TRAINER_GPUS_PER_NODE=1 \
 WANDB_ENTITY=samaier-epfl \
 LOG_VAL_GENERATIONS=8 \
@@ -300,6 +378,7 @@ SMOKE TESTS (RECOMMENDED FIRST)
 # - LOG_VAL_GENERATIONS controls how many validation samples are logged and dumped per validation pass.
 # - VALIDATION_DATA_DIR controls where JSONL inspection files are written.
 # - For constitutional SDPO, dumped rows include: input, output, score, and teacher_prompt.
+# - Off-policy OPSD uses teacher-generated trajectories with the student prompt reconstructed for distillation.
 # - For GRPO, dumped rows include the student generations and judge-derived score fields.
 
 
@@ -327,6 +406,7 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=50 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=2 \
+SAVE_FREQ=2 \
 TRAINER_GPUS_PER_NODE=4 \
 WANDB_ENTITY=samaier-epfl \
 LOG_VAL_GENERATIONS=8 \
@@ -357,6 +437,40 @@ TOTAL_EPOCHS=1 \
 TOTAL_TRAINING_STEPS=50 \
 VAL_BEFORE_TRAIN=True \
 TEST_FREQ=2 \
+SAVE_FREQ=2 \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=8 \
+VALIDATION_DATA_DIR=/dlabscratch1/${USER}/output/validation_generations \
+VALIDATION_GENERATIONS_ONLY=True \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
+
+# Off-policy OPSD smoke test (teacher-generated trajectories, generation-only validation)
+rs sdpo-offpolicy-smoke-${USER}-bt --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=sdpo_constitutional_offpolicy \
+DATA_PATH=datasets/beavertails_safety \
+SUFFIX=smoke_offpolicy \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+TRAIN_BATCH_SIZE=8 \
+ROLLOUT_BATCH_SIZE=2 \
+PPO_MINI_BATCH_SIZE=8 \
+LR=1e-5 \
+ALPHA=0.5 \
+DISTILLATION_TOPK=100 \
+DONT_REPROMPT_ON_SELF_SUCCESS=True \
+ROLLOUT_SOURCE=teacher \
+MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+TRAIN_MAX_SAMPLES=32 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=50 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=2 \
+SAVE_FREQ=2 \
 TRAINER_GPUS_PER_NODE=4 \
 WANDB_ENTITY=samaier-epfl \
 LOG_VAL_GENERATIONS=8 \
@@ -385,6 +499,7 @@ TOTAL_TRAINING_STEPS=10            # hard cap on updates
 TOTAL_EPOCHS=1                     # default epoch budget
 VAL_BEFORE_TRAIN=True
 TEST_FREQ=50                       # use sparse judged validation for full GRPO runs
+SAVE_FREQ=50                       # checkpoint cadence for full runs
 VAL_GENERATION_N=4                 # validation generations per prompt for GRPO
 
 SDPO METRIC CHEAT SHEET
