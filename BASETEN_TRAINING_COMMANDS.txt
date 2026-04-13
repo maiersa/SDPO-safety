@@ -270,7 +270,9 @@ bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_sdpo_worker.sh
 GRPO (BASE TEN STYLE): DIRECT RS COMMAND (8 GPUS)
 ================================================================================
 
-rs grpo-const-${USER}-bt --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+rs grpo-const-${USER}-bt-fast --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+rs grpo-const-${USER}-bt-fast --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+rs grpo-const-${USER}-bt-fast --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
 USER=$USER \
 CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
 CONFIG_NAME=baseline_grpo_constitutional \
@@ -295,6 +297,13 @@ VAL_BEFORE_TRAIN=True \
 TEST_FREQ=50 \
 SAVE_FREQ=50 \
 VAL_GENERATION_N=4 \
+VALIDATION_GENERATIONS_ONLY=False \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.8 \
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=16384 \
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=2 \
+ACTOR_PPO_MICRO_BATCH_SIZE=2 \
+ASYNC_REWARD_FUNCTION=True \
+REWARD_MAX_WORKERS=16 \
 TRAINER_GPUS_PER_NODE=8 \
 WANDB_ENTITY=samaier-epfl \
 LOG_VAL_GENERATIONS=8 \
@@ -572,86 +581,16 @@ runai logs <job-name> -p dlab-samaier | tail -n 200
 POST-TRAIN BULLSHITBENCH EVALUATION
 ================================================================================
 
-# BullshitBench nonsense set is prepared by scripts/download_bullshitbench.sh.
-# Evaluate checkpoints on nonsense prompts only.
-
-# 1) Set the model/checkpoint path to evaluate.
-MODEL_TO_EVAL=<PATH_TO_TRAINED_MODEL_OR_ACTOR_CKPT>
-OUT_JSON=/dlabscratch1/${USER}/output/bullshitbench_eval_$(date +%Y%m%d_%H%M%S).json
-
-# 2) Run evaluation with OpenAI constitutional judge scoring.
-MODEL_TO_EVAL=$MODEL_TO_EVAL OUT_JSON=$OUT_JSON OPENAI_API_KEY=$OPENAI_API_KEY python - << 'PY'
-import json
-import os
-from statistics import mean
-
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from verl.utils.reward_score.feedback.constitution_judge import call_judge_api
-
-model_path = os.environ.get("MODEL_TO_EVAL")
-out_json = os.environ.get("OUT_JSON", "bullshitbench_eval.json")
-data_path = "datasets/bullshitbench/nonsense_questions.json"
-
-if not model_path or model_path.startswith("<PATH_TO"):
-	raise SystemExit("Set MODEL_TO_EVAL to a real checkpoint/model path before running.")
-
-with open(data_path, "r") as f:
-	data = json.load(f)
-
-tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-	model_path,
-	trust_remote_code=True,
-	torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-	device_map="auto",
-)
-
-results = []
-for i, item in enumerate(data):
-	q = item.get("question") or item.get("prompt") or ""
-	if not q:
-		continue
-	inputs = tokenizer(q, return_tensors="pt").to(model.device)
-	with torch.no_grad():
-		out = model.generate(
-			**inputs,
-			max_new_tokens=256,
-			temperature=0.7,
-			top_p=0.95,
-			do_sample=True,
-		)
-	text = tokenizer.decode(out[0], skip_special_tokens=True)
-	resp = text[len(q):].strip() if text.startswith(q) else text.strip()
-	judge = call_judge_api(q, resp)
-	results.append({
-		"id": item.get("id", i),
-		"correctness": judge["correctness"],
-		"tone": judge["tone"],
-		"combined_score": judge["combined_score"],
-		"question": q,
-		"response": resp,
-	})
-	if (i + 1) % 10 == 0:
-		print(f"Scored {i + 1}/{len(data)} prompts")
-
-summary = {
-	"model_path": model_path,
-	"num_scored": len(results),
-	"mean_correctness": mean(r["correctness"] for r in results) if results else 0.0,
-	"mean_tone": mean(r["tone"] for r in results) if results else 0.0,
-	"mean_combined": mean(r["combined_score"] for r in results) if results else 0.0,
-}
-
-with open(out_json, "w") as f:
-	json.dump({"summary": summary, "results": results}, f, indent=2)
-
-print("\nBullshitBench evaluation summary:")
-for k, v in summary.items():
-	print(f"  {k}: {v}")
-print(f"\nDetailed results: {out_json}")
-PY
+rs bullshitbench-eval-${USER} --gpu 1.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+MODELS_JSON=/dlabscratch1/${USER}/projects/SDPO-safety/scripts/bullshitbench_models.json \
+OUT_DIR=/dlabscratch1/${USER}/output/bullshitbench_$(date +%Y%m%d_%H%M%S) \
+OPENAI_API_KEY=$OPENAI_API_KEY \
+REJECTION_JUDGE_MODEL=gpt-5.4-mini \
+SKIP_JUDGE=True \
+/bin/bash /dlabscratch1/${USER}/projects/SDPO-safety/runai_bullshitbench_worker.sh
 
 
 NOTES

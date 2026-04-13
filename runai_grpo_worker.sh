@@ -25,6 +25,14 @@ SAVE_FREQ=${SAVE_FREQ:-"50"}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-"0"}
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-""}
 VAL_GENERATION_N=${VAL_GENERATION_N:-"4"}
+VALIDATION_GENERATIONS_ONLY=${VALIDATION_GENERATIONS_ONLY:-"False"}
+
+ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-"0.8"}
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-"16384"}
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=${ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE:-"2"}
+ACTOR_PPO_MICRO_BATCH_SIZE=${ACTOR_PPO_MICRO_BATCH_SIZE:-"2"}
+ASYNC_REWARD_FUNCTION=${ASYNC_REWARD_FUNCTION:-"True"}
+REWARD_MAX_WORKERS=${REWARD_MAX_WORKERS:-"16"}
 
 CONDA_ENV=${CONDA_ENV:-"default"}
 REPO_DIR=${REPO_DIR:-"/dlabscratch1/${USER}/projects/SDPO-safety"}
@@ -158,6 +166,7 @@ trainer.group_name=GRPO-runai \
 trainer.n_gpus_per_node=$TRAINER_GPUS_PER_NODE \
 trainer.total_epochs=$TOTAL_EPOCHS \
 trainer.val_before_train=$VAL_BEFORE_TRAIN \
+trainer.validation_generations_only=$VALIDATION_GENERATIONS_ONLY \
 trainer.test_freq=$TEST_FREQ \
 trainer.save_freq=$SAVE_FREQ \
 trainer.max_actor_ckpt_to_keep=2 \
@@ -165,7 +174,14 @@ actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
 actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE \
 actor_rollout_ref.actor.optim.lr=$LR \
 actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$ACTOR_PPO_MICRO_BATCH_SIZE \
 actor_rollout_ref.model.path=$MODEL_PATH \
+actor_rollout_ref.rollout.gpu_memory_utilization=$ROLLOUT_GPU_MEMORY_UTILIZATION \
+actor_rollout_ref.rollout.max_num_batched_tokens=$ROLLOUT_MAX_NUM_BATCHED_TOKENS \
+actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE \
+actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE \
+reward_model.launch_reward_fn_async=$ASYNC_REWARD_FUNCTION \
++reward_model.reward_kwargs.max_workers=$REWARD_MAX_WORKERS \
 algorithm.rollout_correction.rollout_is=token \
 actor_rollout_ref.rollout.val_kwargs.n=$VAL_GENERATION_N \
 vars.dir=$REPO_DIR \
@@ -192,6 +208,12 @@ echo "Repo: $REPO_DIR"
 echo "Data: $DATA_PATH"
 echo "Model: $MODEL_PATH"
 echo "Conda env requested: $CONDA_ENV"
+echo "Async reward fn: $ASYNC_REWARD_FUNCTION"
+echo "Reward max workers: $REWARD_MAX_WORKERS"
+echo "Rollout GPU memory utilization: $ROLLOUT_GPU_MEMORY_UTILIZATION"
+echo "Rollout max batched tokens: $ROLLOUT_MAX_NUM_BATCHED_TOKENS"
+echo "Rollout/ref logprob micro-batch per GPU: $ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE"
+echo "Actor PPO micro-batch per GPU: $ACTOR_PPO_MICRO_BATCH_SIZE"
 echo "----------------------------------------------------------------"
 
 bash training/verl_training.sh "$EXP_NAME" "$CONFIG_NAME" "$DATA_PATH" $ARGS

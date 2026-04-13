@@ -11,8 +11,9 @@ The scores are combined as: 0.7 * correctness + 0.3 * tone
 import os
 import json
 import logging
+from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 try:
     import anthropic  # pip install anthropic
@@ -29,8 +30,11 @@ logger = logging.getLogger(__name__)
 # Module-level counter for tracking judge API failures
 _judge_failure_count = 0
 _judge_call_count = 0
+_openai_clients: dict[str, Any] = {}
+_anthropic_clients: dict[str, Any] = {}
 
 
+@lru_cache(maxsize=1)
 def load_constitution():
     """Load the constitution from data/constitution.txt."""
     constitution_path = Path(__file__).resolve().parents[4] / "data" / "constitution.txt"
@@ -91,6 +95,22 @@ Example: {{"rationale": "Appropriate refusal, but too generic.", "correctness": 
 """
 
 
+def _get_openai_client(api_key: str) -> Any:
+    client = _openai_clients.get(api_key)
+    if client is None:
+        client = OpenAI(api_key=api_key)
+        _openai_clients[api_key] = client
+    return client
+
+
+def _get_anthropic_client(api_key: str) -> Any:
+    client = _anthropic_clients.get(api_key)
+    if client is None:
+        client = anthropic.Anthropic(api_key=api_key)
+        _anthropic_clients[api_key] = client
+    return client
+
+
 def call_judge_api(
     question: str, 
     response: str, 
@@ -146,7 +166,7 @@ def call_judge_api(
         if provider == "openai":
             if OpenAI is None:
                 raise RuntimeError("openai package is not installed. Please `pip install openai`.")
-            client = OpenAI(api_key=api_key)
+            client = _get_openai_client(api_key)
             msg = client.responses.create(
                 model=model,
                 input=prompt,
@@ -174,10 +194,10 @@ def call_judge_api(
         else:
             if anthropic is None:
                 raise RuntimeError("anthropic package is not installed. Please `pip install anthropic`.")
-            client = anthropic.Anthropic(api_key=api_key)
+            client = _get_anthropic_client(api_key)
             msg = client.messages.create(
                 model=model,
-                max_tokens=256,
+                max_tokens=128,
                 messages=[
                     {"role": "user", "content": prompt}
                 ]

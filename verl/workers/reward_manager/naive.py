@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import torch
@@ -27,7 +28,15 @@ from verl.workers.reward_manager.abstract import AbstractRewardManager
 class NaiveRewardManager(AbstractRewardManager):
     """The reward manager."""
 
-    def __init__(self, tokenizer, num_examine, compute_score=None, reward_fn_key="data_source") -> None:
+    def __init__(
+        self,
+        tokenizer,
+        num_examine,
+        compute_score=None,
+        reward_fn_key="data_source",
+        max_workers: int = 1,
+        **reward_kwargs: Any,
+    ) -> None:
         """
         Initialize the NaiveRewardManager instance.
 
@@ -42,6 +51,8 @@ class NaiveRewardManager(AbstractRewardManager):
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or default_compute_score
         self.reward_fn_key = reward_fn_key  # Store the key for accessing the data source
+        self.max_workers = max(1, int(max_workers))
+        self.reward_kwargs = reward_kwargs
 
     def __call__(self, data: DataProto, return_dict: bool = True) -> torch.Tensor | dict[str, Any]:
         """We will expand this function gradually based on the available datasets"""
@@ -55,6 +66,7 @@ class NaiveRewardManager(AbstractRewardManager):
         reward_extra_info = defaultdict(list)
 
         already_print_data_sources = {}
+        pending_scores: list[tuple[int, str, str, Any, str, int, dict[str, Any]]] = []
 
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
@@ -88,12 +100,31 @@ class NaiveRewardManager(AbstractRewardManager):
             extra_info["rollout_reward_scores"] = rollout_reward_scores
             extra_info["truncated"] = not (valid_response_ids == self.tokenizer.eos_token_id).any().item()
 
+            pending_scores.append((i, data_source, prompt_str, ground_truth, response_str, valid_response_length, extra_info))
+
+        def _score_one(item: tuple[int, str, str, Any, str, int, dict[str, Any]]) -> tuple[int, Any]:
+            idx, data_source, _prompt_str, ground_truth, response_str, _valid_response_length, extra_info = item
             score = self.compute_score(
                 data_source=data_source,
                 solution_str=response_str,
                 ground_truth=ground_truth,
                 extra_info=extra_info,
+                **self.reward_kwargs,
             )
+            return idx, score
+
+        scores_by_idx: dict[int, Any] = {}
+        if self.max_workers > 1 and len(pending_scores) > 1:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(pending_scores))) as executor:
+                for idx, score in executor.map(_score_one, pending_scores):
+                    scores_by_idx[idx] = score
+        else:
+            for item in pending_scores:
+                idx, score = _score_one(item)
+                scores_by_idx[idx] = score
+
+        for i, data_source, prompt_str, ground_truth, response_str, valid_response_length, _extra_info in pending_scores:
+            score = scores_by_idx[i]
 
             if isinstance(score, dict):
                 reward = score["score"]
