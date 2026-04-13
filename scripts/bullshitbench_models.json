@@ -1,0 +1,18 @@
+[
+  {
+    "name": "qwen3_4b_base",
+    "path": "Qwen/Qwen3-4B-Instruct-2507"
+  },
+  {
+    "name": "opsd_on_policy",
+    "path": "/dlabscratch1/samaier/checkpoints/RUNAI-SDPO-train64-alpha0.5-rollout8-lr1e-5-Qwen-Qwen3-4B-Instruct-2507-baseten_sdpo_8gpu"
+  },
+  {
+    "name": "opsd_off_policy",
+    "path": "/dlabscratch1/samaier/checkpoints/RUNAI-SDPO-train64-alpha0.5-rollout8-lr1e-5-Qwen-Qwen3-4B-Instruct-2507-baseten_sdpo_offpolicy_8gpu"
+  },
+  {
+    "name": "grpo_on_policy",
+    "path": "/dlabscratch1/samaier/checkpoints/RUNAI-GRPO-mbs-16-train64-rollout8-lr1e-5-Qwen-Qwen3-4B-Instruct-2507-baseten_grpo_8gpu"
+  }  
+]
