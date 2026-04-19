@@ -62,7 +62,11 @@ from verl.utils.debug import marked_timer
 from verl.utils.import_utils import load_class_from_fqn
 from verl.utils.model import compute_position_id_with_mask
 from verl.utils.metric import reduce_metrics
-from verl.utils.reward_score.feedback.constitution_teacher import build_teacher_prompt, load_constitution
+from verl.utils.reward_score.feedback.constitution_teacher import (
+    build_teacher_prompt as build_constitution_teacher_prompt,
+    load_constitution,
+)
+from verl.utils.reward_score.feedback.math_teacher import build_teacher_prompt as build_math_teacher_prompt
 from verl.utils.py_functional import rename_dict
 from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
@@ -702,10 +706,24 @@ class RayPPOTrainer:
             return "student"
         return self_distillation_cfg.get("rollout_source", "student")
 
+    def _get_sdpo_teacher_prompt_type(self) -> Optional[str]:
+        self_distillation_cfg = self._get_self_distillation_cfg()
+        if self_distillation_cfg is None:
+            return None
+
+        teacher_prompt_type = self_distillation_cfg.get("teacher_prompt_type", None)
+        if teacher_prompt_type is not None:
+            return teacher_prompt_type
+
+        if self_distillation_cfg.get("include_constitution", False):
+            return "constitution"
+
+        return None
+
     def _uses_teacher_rollout_for_sdpo(self) -> bool:
         return (
             self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo"
-            and self.config.actor_rollout_ref.actor.get("self_distillation", {}).get("include_constitution", False)
+            and self._get_sdpo_teacher_prompt_type() is not None
             and self._get_sdpo_rollout_source() == "teacher"
         )
 
@@ -715,9 +733,24 @@ class RayPPOTrainer:
         teacher_messages = []
         for messages in raw_prompts:
             system_messages = list(messages[:-1])
-            teacher_prompt = build_teacher_prompt(
+            teacher_prompt = build_constitution_teacher_prompt(
                 question=messages[-1]["content"],
                 constitution=constitution_text,
+            )
+            teacher_messages.append(system_messages + [{"role": "user", "content": teacher_prompt}])
+        return teacher_messages
+
+    def _build_math_teacher_messages(
+        self, raw_prompts: list[list[dict[str, str]]], extra_infos: list[dict[str, Any]]
+    ) -> list[list[dict[str, str]]]:
+        teacher_messages = []
+        for messages, extra_info in zip(raw_prompts, extra_infos, strict=True):
+            system_messages = list(messages[:-1])
+            problem_text = extra_info.get("question") or messages[-1]["content"]
+            solution_text = extra_info.get("answer") or ""
+            teacher_prompt = build_math_teacher_prompt(
+                problem_text=problem_text,
+                solution_text=solution_text,
             )
             teacher_messages.append(system_messages + [{"role": "user", "content": teacher_prompt}])
         return teacher_messages
@@ -746,9 +779,20 @@ class RayPPOTrainer:
         if self_distillation_cfg is None:
             return gen_batch
 
-        constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
+        teacher_prompt_type = self._get_sdpo_teacher_prompt_type()
+        if teacher_prompt_type is None:
+            return gen_batch
+
         raw_prompts = [list(messages) for messages in gen_batch.non_tensor_batch["raw_prompt"]]
-        teacher_messages = self._build_constitution_teacher_messages(raw_prompts, constitution_text)
+        if teacher_prompt_type == "constitution":
+            constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
+            teacher_messages = self._build_constitution_teacher_messages(raw_prompts, constitution_text)
+        elif teacher_prompt_type == "math_reference":
+            extra_infos = list(gen_batch.non_tensor_batch["extra_info"])
+            teacher_messages = self._build_math_teacher_messages(raw_prompts, extra_infos)
+        else:
+            raise ValueError(f"Unsupported SDPO teacher_prompt_type: {teacher_prompt_type}")
+
         max_prompt_len = self_distillation_cfg.get(
             "max_reprompt_len", self.config.actor_rollout_ref.rollout.prompt_length
         )
@@ -854,15 +898,16 @@ class RayPPOTrainer:
         response_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in responses]
         prompt_texts = [msgs[-1]["content"] for msgs in batch.non_tensor_batch["raw_prompt"]]
         batch_size = batch.batch.batch_size[0]
-        include_constitution = self_distillation_cfg.get("include_constitution", False)
+        teacher_prompt_type = self._get_sdpo_teacher_prompt_type()
+        uses_privileged_teacher_prompt = teacher_prompt_type is not None
         rollout_source = self_distillation_cfg.get("rollout_source", "student")
         constitution_text = None
-        if include_constitution:
+        if teacher_prompt_type == "constitution":
             constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
 
         # Extract feedback if available and include_environment_feedback is enabled
         feedback_list = self._collect_feedback(
-            include_environment_feedback=self_distillation_cfg.include_environment_feedback and not include_constitution,
+            include_environment_feedback=self_distillation_cfg.include_environment_feedback and not uses_privileged_teacher_prompt,
             reward_extra_infos_dict=reward_extra_infos_dict,
             batch_size=batch_size,
         )
@@ -883,10 +928,19 @@ class RayPPOTrainer:
         def _build_teacher_message(i: int) -> list[dict]:
             system_messages = batch.non_tensor_batch["raw_prompt"][i][:-1]
 
-            if include_constitution:
-                teacher_prompt = build_teacher_prompt(
+            if teacher_prompt_type == "constitution":
+                teacher_prompt = build_constitution_teacher_prompt(
                     question=prompt_texts[i],
                     constitution=constitution_text,
+                )
+                return system_messages + [
+                    {"role": "user", "content": teacher_prompt},
+                ]
+            if teacher_prompt_type == "math_reference":
+                extra_info = batch.non_tensor_batch["extra_info"][i]
+                teacher_prompt = build_math_teacher_prompt(
+                    problem_text=extra_info.get("question") or prompt_texts[i],
+                    solution_text=extra_info.get("answer") or "",
                 )
                 return system_messages + [
                     {"role": "user", "content": teacher_prompt},
@@ -953,7 +1007,7 @@ class RayPPOTrainer:
             for i in range(batch_size)
         ]
 
-        if include_constitution:
+        if uses_privileged_teacher_prompt:
             self_distillation_mask = torch.ones(batch_size, dtype=torch.float32, device=device)
         else:
             # self_distillation_mask is True if sample has a solution OR feedback is used (i.e., will get a reprompted message)
@@ -973,8 +1027,9 @@ class RayPPOTrainer:
             "self_distillation/feedback_available_fraction": num_with_feedback_available / batch_size,
             "self_distillation/feedback_used_fraction": num_with_feedback_used / batch_size,
             "self_distillation/reprompt_sample_fraction": self_distillation_mask.float().mean().item(),
-            "self_distillation/constitution_prompt_fraction": float(include_constitution),
-            "self_distillation/teacher_rollout_fraction": float(include_constitution and rollout_source == "teacher"),
+            "self_distillation/constitution_prompt_fraction": float(teacher_prompt_type == "constitution"),
+            "self_distillation/math_reference_prompt_fraction": float(teacher_prompt_type == "math_reference"),
+            "self_distillation/teacher_rollout_fraction": float(uses_privileged_teacher_prompt and rollout_source == "teacher"),
         }
         return DataProto.from_dict(tensors={
             "teacher_input_ids": teacher_input_ids,
@@ -1015,10 +1070,12 @@ class RayPPOTrainer:
         sample_teacher_prompts = []
 
         self_distillation_cfg = self.config.actor_rollout_ref.actor.get("self_distillation", {})
-        val_include_constitution = self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo" and self_distillation_cfg.get("include_constitution", False)
+        val_teacher_prompt_type = None
+        if self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo":
+            val_teacher_prompt_type = self._get_sdpo_teacher_prompt_type()
         val_constitution_text = None
-        val_rollout_source = self._get_sdpo_rollout_source() if val_include_constitution else "student"
-        if val_include_constitution:
+        val_rollout_source = self._get_sdpo_rollout_source() if val_teacher_prompt_type is not None else "student"
+        if val_teacher_prompt_type == "constitution":
             val_constitution_text = load_constitution(self_distillation_cfg.get("constitution_path", None))
 
         for test_data in self.val_dataloader:
@@ -1044,7 +1101,7 @@ class RayPPOTrainer:
             sample_gts.extend(ground_truths)
 
             test_gen_batch = self._get_gen_batch(test_batch)
-            if val_include_constitution and val_rollout_source == "teacher":
+            if val_teacher_prompt_type is not None and val_rollout_source == "teacher":
                 test_gen_batch = self._build_teacher_rollout_gen_batch(test_gen_batch)
             test_gen_batch.meta_info = {
                 "eos_token_id": self.tokenizer.eos_token_id,
@@ -1070,7 +1127,7 @@ class RayPPOTrainer:
 
             # unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
-            if val_include_constitution and val_rollout_source == "teacher":
+            if val_teacher_prompt_type is not None and val_rollout_source == "teacher":
                 test_output_gen_batch = self._merge_teacher_rollout_output_into_student_batch(test_batch, test_output_gen_batch)
 
             print("validation generation end")
@@ -1090,14 +1147,24 @@ class RayPPOTrainer:
             sample_inputs.extend(input_texts)
             sample_uids.extend(test_batch.non_tensor_batch["uid"])
 
-            if val_include_constitution:
+            if val_teacher_prompt_type == "constitution":
                 raw_prompts = test_batch.non_tensor_batch["raw_prompt"]
                 teacher_prompt_texts = [
-                    build_teacher_prompt(
+                    build_constitution_teacher_prompt(
                         question=messages[-1]["content"],
                         constitution=val_constitution_text,
                     )
                     for messages in raw_prompts
+                ]
+            elif val_teacher_prompt_type == "math_reference":
+                raw_prompts = test_batch.non_tensor_batch["raw_prompt"]
+                extra_infos = test_batch.non_tensor_batch["extra_info"]
+                teacher_prompt_texts = [
+                    build_math_teacher_prompt(
+                        problem_text=extra_info.get("question") or messages[-1]["content"],
+                        solution_text=extra_info.get("answer") or "",
+                    )
+                    for messages, extra_info in zip(raw_prompts, extra_infos, strict=True)
                 ]
             else:
                 teacher_prompt_texts = [None] * len(input_texts)
@@ -1948,14 +2015,14 @@ class RayPPOTrainer:
                         images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
                     batch.meta_info["images_seqlens"] = images_seqlens_all
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        sdpo_constitutional_training = (
+                        sdpo_teacher_prompt_training = (
                             self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla") == "sdpo"
-                            and self.config.actor_rollout_ref.actor.get("self_distillation", {}).get("include_constitution", False)
+                            and self._get_sdpo_teacher_prompt_type() is not None
                         )
 
-                        # Constitutional SDPO uses dense teacher supervision and does not require
+                        # Teacher-prompt SDPO uses dense privileged supervision and does not require
                         # an external reward/judge during training.
-                        if sdpo_constitutional_training:
+                        if sdpo_teacher_prompt_training:
                             reward_tensor = torch.zeros_like(batch.batch["responses"], dtype=torch.float32)
                             reward_extra_infos_dict = {}
                             metrics["self_distillation/reward_bypass"] = 1.0
@@ -2035,7 +2102,7 @@ class RayPPOTrainer:
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
                         reward_extra_infos_dict: dict[str, list]
-                        if self.config.reward_model.launch_reward_fn_async and not sdpo_constitutional_training:
+                        if self.config.reward_model.launch_reward_fn_async and not sdpo_teacher_prompt_training:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
                         batch.batch["token_level_scores"] = reward_tensor
 

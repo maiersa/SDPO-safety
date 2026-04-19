@@ -57,6 +57,8 @@ class SelfDistillationConfig(BaseConfig):
         solution_template (str): Template for formatting solution section. Uses {successful_previous_attempt} placeholder.
         feedback_template (str): Template for formatting feedback section. Uses {feedback_raw} placeholder.
         include_constitution (bool): Whether to prepend privileged constitutional context to the teacher prompt.
+        teacher_prompt_type (Optional[str]): Privileged teacher prompt mode. Options: None, "constitution", or
+            "math_reference". If unset, defaults to "constitution" when include_constitution is enabled.
         rollout_source (str): Which policy context generates trajectories for SDPO. Options: "student" or "teacher".
         constitution_path (Optional[str]): Optional override path for the constitution text file.
         include_environment_feedback (bool): Whether to include environment feedback in reprompting for wrong attempts.
@@ -92,6 +94,7 @@ class SelfDistillationConfig(BaseConfig):
         "{feedback_raw}\n\n"
     )
     include_constitution: bool = False
+    teacher_prompt_type: Optional[str] = None
     rollout_source: str = "student"
     constitution_path: Optional[str] = None
     include_environment_feedback: bool = False
@@ -121,6 +124,12 @@ class SelfDistillationConfig(BaseConfig):
             raise ValueError(
                 "self_distillation.rollout_source must be one of "
                 f"{valid_rollout_sources}, got {self.rollout_source}"
+            )
+        valid_teacher_prompt_types = [None, "constitution", "math_reference"]
+        if self.teacher_prompt_type not in valid_teacher_prompt_types:
+            raise ValueError(
+                "self_distillation.teacher_prompt_type must be one of "
+                f"{valid_teacher_prompt_types}, got {self.teacher_prompt_type}"
             )
 
 

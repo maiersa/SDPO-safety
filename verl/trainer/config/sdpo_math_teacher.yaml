@@ -1,0 +1,42 @@
+defaults:
+  - ppo_trainer
+  - user
+  - _self_
+
+# SDPO / OPSD with Math Reference Teacher
+# Student rolls out from the plain problem prompt.
+# The teacher receives the original problem plus the dataset reference solution
+# and scores the student's sampled trajectory.
+
+max_model_len: 18944
+
+actor_rollout_ref:
+  actor:
+    ppo_mini_batch_size: 32
+    policy_loss:
+      loss_mode: sdpo
+    self_distillation:
+      max_reprompt_len: 10240
+      is_clip: 2.0
+      teacher_prompt_type: math_reference
+      rollout_source: student
+    optim:
+      lr: 1e-5
+  rollout:
+    n: 4
+    calculate_log_probs: True
+
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: False
+  rollout_correction:
+    rollout_is: token
+    rollout_is_threshold: 2.0
+
+data:
+  train_batch_size: 32
+
+trainer:
+  val_before_train: False
+  project_name: SDPO-MathTeacher-${oc.env:USER}
+  group_name: sdpo_math_teacher

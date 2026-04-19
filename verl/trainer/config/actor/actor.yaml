@@ -147,6 +147,20 @@ self_distillation:
 
     {feedback_raw}
 
+  # Whether to prepend privileged constitutional context to the teacher prompt
+  include_constitution: false
+
+  # Privileged teacher prompt mode for SDPO teacher rollouts.
+  # Options: null, constitution, math_reference.
+  # If null and include_constitution=true, constitution is used for backward compatibility.
+  teacher_prompt_type: null
+
+  # Which policy context generates trajectories for SDPO. Options: student or teacher.
+  rollout_source: student
+
+  # Optional path override for the constitution text file
+  constitution_path: null
+
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
 clip_ratio_c: 3.0
 

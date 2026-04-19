@@ -13,6 +13,7 @@ ROLLOUT_BATCH_SIZE=${ROLLOUT_BATCH_SIZE:-8}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-8}
 LR=${LR:-"1e-5"}
 MODEL_PATH=${MODEL_PATH:-"Qwen/Qwen2.5-7B-Instruct"}
+TOKENIZER_PATH=${TOKENIZER_PATH:-""}
 
 # Optional smoke-test knobs
 TRAIN_MAX_SAMPLES=${TRAIN_MAX_SAMPLES:-"-1"}
@@ -20,12 +21,15 @@ VAL_MAX_SAMPLES=${VAL_MAX_SAMPLES:-"8"}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-"1"}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-""}
 VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-"False"}
+VAL_ONLY=${VAL_ONLY:-"False"}
 TEST_FREQ=${TEST_FREQ:-"50"}
 SAVE_FREQ=${SAVE_FREQ:-"50"}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-"0"}
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-""}
 VAL_GENERATION_N=${VAL_GENERATION_N:-"4"}
 VALIDATION_GENERATIONS_ONLY=${VALIDATION_GENERATIONS_ONLY:-"False"}
+RESUME_MODE=${RESUME_MODE:-"auto"}
+RESUME_FROM_PATH=${RESUME_FROM_PATH:-""}
 
 ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-"0.8"}
 ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-"16384"}
@@ -33,6 +37,9 @@ ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=${ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE:-"2"}
 ACTOR_PPO_MICRO_BATCH_SIZE=${ACTOR_PPO_MICRO_BATCH_SIZE:-"2"}
 ASYNC_REWARD_FUNCTION=${ASYNC_REWARD_FUNCTION:-"True"}
 REWARD_MAX_WORKERS=${REWARD_MAX_WORKERS:-"16"}
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-""}
+DATA_MAX_PROMPT_LENGTH=${DATA_MAX_PROMPT_LENGTH:-""}
+DATA_MAX_RESPONSE_LENGTH=${DATA_MAX_RESPONSE_LENGTH:-""}
 
 CONDA_ENV=${CONDA_ENV:-"default"}
 REPO_DIR=${REPO_DIR:-"/dlabscratch1/${USER}/projects/SDPO-safety"}
@@ -166,10 +173,12 @@ trainer.group_name=GRPO-runai \
 trainer.n_gpus_per_node=$TRAINER_GPUS_PER_NODE \
 trainer.total_epochs=$TOTAL_EPOCHS \
 trainer.val_before_train=$VAL_BEFORE_TRAIN \
+trainer.val_only=$VAL_ONLY \
 trainer.validation_generations_only=$VALIDATION_GENERATIONS_ONLY \
 trainer.test_freq=$TEST_FREQ \
 trainer.save_freq=$SAVE_FREQ \
 trainer.max_actor_ckpt_to_keep=2 \
+trainer.resume_mode=$RESUME_MODE \
 actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
 actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE \
 actor_rollout_ref.actor.optim.lr=$LR \
@@ -188,6 +197,10 @@ vars.dir=$REPO_DIR \
 vars.log_dir=$LOG_DIR \
 vars.ckpt_dir=$CKPT_DIR"
 
+if [[ -n "$TOKENIZER_PATH" ]]; then
+    ARGS="$ARGS actor_rollout_ref.model.tokenizer_path=$TOKENIZER_PATH critic.model.tokenizer_path=$TOKENIZER_PATH"
+fi
+
 if [[ "$LOG_VAL_GENERATIONS" != "0" ]]; then
     ARGS="$ARGS trainer.log_val_generations=$LOG_VAL_GENERATIONS"
 fi
@@ -201,12 +214,29 @@ if [[ -n "$TOTAL_TRAINING_STEPS" ]]; then
     ARGS="$ARGS trainer.total_training_steps=$TOTAL_TRAINING_STEPS"
 fi
 
+if [[ -n "$RESUME_FROM_PATH" ]]; then
+    ARGS="$ARGS trainer.resume_from_path=$RESUME_FROM_PATH"
+fi
+
+if [[ -n "$MAX_MODEL_LEN" ]]; then
+    ARGS="$ARGS max_model_len=$MAX_MODEL_LEN actor_rollout_ref.rollout.max_model_len=$MAX_MODEL_LEN"
+fi
+
+if [[ -n "$DATA_MAX_PROMPT_LENGTH" ]]; then
+    ARGS="$ARGS data.max_prompt_length=$DATA_MAX_PROMPT_LENGTH"
+fi
+
+if [[ -n "$DATA_MAX_RESPONSE_LENGTH" ]]; then
+    ARGS="$ARGS data.max_response_length=$DATA_MAX_RESPONSE_LENGTH"
+fi
+
 echo "----------------------------------------------------------------"
 echo "Starting Run:AI GRPO worker"
 echo "Experiment: $EXP_NAME"
 echo "Repo: $REPO_DIR"
 echo "Data: $DATA_PATH"
 echo "Model: $MODEL_PATH"
+echo "Tokenizer path: ${TOKENIZER_PATH:-<default>}"
 echo "Conda env requested: $CONDA_ENV"
 echo "Async reward fn: $ASYNC_REWARD_FUNCTION"
 echo "Reward max workers: $REWARD_MAX_WORKERS"

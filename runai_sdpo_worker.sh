@@ -17,6 +17,11 @@ DISTILLATION_TOPK=${DISTILLATION_TOPK:-100}
 DONT_REPROMPT_ON_SELF_SUCCESS=${DONT_REPROMPT_ON_SELF_SUCCESS:-"True"}
 ROLLOUT_SOURCE=${ROLLOUT_SOURCE:-"student"}
 MODEL_PATH=${MODEL_PATH:-"Qwen/Qwen2.5-7B-Instruct"}
+TOKENIZER_PATH=${TOKENIZER_PATH:-""}
+VAL_GENERATION_N=${VAL_GENERATION_N:-"16"}
+SELF_DISTILL_REPROMPT_TEMPLATE=${SELF_DISTILL_REPROMPT_TEMPLATE:-""}
+SELF_DISTILL_SOLUTION_TEMPLATE=${SELF_DISTILL_SOLUTION_TEMPLATE:-""}
+SELF_DISTILL_FEEDBACK_TEMPLATE=${SELF_DISTILL_FEEDBACK_TEMPLATE:-""}
 
 # Optional smoke-test knobs
 TRAIN_MAX_SAMPLES=${TRAIN_MAX_SAMPLES:-"-1"}
@@ -25,9 +30,15 @@ TOTAL_EPOCHS=${TOTAL_EPOCHS:-"1"}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-""}
 VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-"False"}
 TEST_FREQ=${TEST_FREQ:-"-1"}
+SAVE_FREQ=${SAVE_FREQ:-"50"}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-"0"}
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-""}
 VALIDATION_GENERATIONS_ONLY=${VALIDATION_GENERATIONS_ONLY:-"False"}
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-""}
+DATA_MAX_PROMPT_LENGTH=${DATA_MAX_PROMPT_LENGTH:-""}
+DATA_MAX_RESPONSE_LENGTH=${DATA_MAX_RESPONSE_LENGTH:-""}
+RESUME_MODE=${RESUME_MODE:-"auto"}
+RESUME_FROM_PATH=${RESUME_FROM_PATH:-""}
 
 CONDA_ENV=${CONDA_ENV:-"default"}
 REPO_DIR=${REPO_DIR:-"/dlabscratch1/${USER}/projects/SDPO-safety"}
@@ -157,8 +168,9 @@ trainer.n_gpus_per_node=$TRAINER_GPUS_PER_NODE \
 trainer.total_epochs=$TOTAL_EPOCHS \
 trainer.val_before_train=$VAL_BEFORE_TRAIN \
 trainer.test_freq=$TEST_FREQ \
-trainer.save_freq=50 \
+trainer.save_freq=$SAVE_FREQ \
 trainer.max_actor_ckpt_to_keep=2 \
+trainer.resume_mode=$RESUME_MODE \
 actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE \
 actor_rollout_ref.actor.optim.lr=$LR \
 actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE \
@@ -169,10 +181,26 @@ actor_rollout_ref.actor.self_distillation.alpha=$ALPHA \
 actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
 actor_rollout_ref.model.path=$MODEL_PATH \
 algorithm.rollout_correction.rollout_is=token \
-actor_rollout_ref.rollout.val_kwargs.n=16 \
+actor_rollout_ref.rollout.val_kwargs.n=$VAL_GENERATION_N \
 vars.dir=$REPO_DIR \
 vars.log_dir=$LOG_DIR \
 vars.ckpt_dir=$CKPT_DIR"
+
+if [[ -n "$TOKENIZER_PATH" ]]; then
+    ARGS="$ARGS actor_rollout_ref.model.tokenizer_path=$TOKENIZER_PATH critic.model.tokenizer_path=$TOKENIZER_PATH"
+fi
+
+if [[ -n "$SELF_DISTILL_REPROMPT_TEMPLATE" ]]; then
+    ARGS="$ARGS actor_rollout_ref.actor.self_distillation.reprompt_template=$SELF_DISTILL_REPROMPT_TEMPLATE"
+fi
+
+if [[ -n "$SELF_DISTILL_SOLUTION_TEMPLATE" ]]; then
+    ARGS="$ARGS actor_rollout_ref.actor.self_distillation.solution_template=$SELF_DISTILL_SOLUTION_TEMPLATE"
+fi
+
+if [[ -n "$SELF_DISTILL_FEEDBACK_TEMPLATE" ]]; then
+    ARGS="$ARGS actor_rollout_ref.actor.self_distillation.feedback_template=$SELF_DISTILL_FEEDBACK_TEMPLATE"
+fi
 
 if [[ "$LOG_VAL_GENERATIONS" != "0" ]]; then
     ARGS="$ARGS trainer.log_val_generations=$LOG_VAL_GENERATIONS"
@@ -191,12 +219,29 @@ if [[ -n "$TOTAL_TRAINING_STEPS" ]]; then
     ARGS="$ARGS trainer.total_training_steps=$TOTAL_TRAINING_STEPS"
 fi
 
+if [[ -n "$RESUME_FROM_PATH" ]]; then
+    ARGS="$ARGS trainer.resume_from_path=$RESUME_FROM_PATH"
+fi
+
+if [[ -n "$MAX_MODEL_LEN" ]]; then
+    ARGS="$ARGS max_model_len=$MAX_MODEL_LEN actor_rollout_ref.rollout.max_model_len=$MAX_MODEL_LEN"
+fi
+
+if [[ -n "$DATA_MAX_PROMPT_LENGTH" ]]; then
+    ARGS="$ARGS data.max_prompt_length=$DATA_MAX_PROMPT_LENGTH"
+fi
+
+if [[ -n "$DATA_MAX_RESPONSE_LENGTH" ]]; then
+    ARGS="$ARGS data.max_response_length=$DATA_MAX_RESPONSE_LENGTH"
+fi
+
 echo "----------------------------------------------------------------"
 echo "Starting Run:AI SDPO worker"
 echo "Experiment: $EXP_NAME"
 echo "Repo: $REPO_DIR"
 echo "Data: $DATA_PATH"
 echo "Model: $MODEL_PATH"
+echo "Tokenizer path: ${TOKENIZER_PATH:-<default>}"
 echo "Conda env requested: $CONDA_ENV"
 echo "----------------------------------------------------------------"
 

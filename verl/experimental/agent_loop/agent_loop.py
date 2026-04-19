@@ -366,10 +366,11 @@ class AgentLoopWorker:
         self.reward_router_address = reward_router_address
 
         model_path = config.actor_rollout_ref.model.path
+        tokenizer_source = config.actor_rollout_ref.model.get("tokenizer_path", None) or model_path
         self.model_name = "/".join(model_path.split("/")[-2:])
-        local_path = copy_to_local(config.actor_rollout_ref.model.path)
-        self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
-        self.processor = hf_processor(local_path, trust_remote_code=True)
+        local_tokenizer_path = copy_to_local(tokenizer_source)
+        self.tokenizer = hf_tokenizer(local_tokenizer_path, trust_remote_code=True)
+        self.processor = hf_processor(local_tokenizer_path, trust_remote_code=True)
 
         agent_loop_config_path = config.actor_rollout_ref.rollout.agent.agent_loop_config_path
         if agent_loop_config_path:

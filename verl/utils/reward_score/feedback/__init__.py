@@ -1,4 +1,5 @@
 from verl.utils.reward_score.feedback import math
+from verl.utils.reward_score.feedback import gsm8k
 from verl.utils.reward_score.feedback import code
 from verl.utils.reward_score.feedback import gpqa
 from verl.utils.reward_score.feedback import mcq
@@ -14,7 +15,9 @@ def compute_score(
 ) -> dict:
     if data_source in ["code", "livecodebench", "humanevalplus"]:
         results = code.compute_score(solution_str, ground_truth, extra_info, sparse_rewards=True, max_test_cases=None)
-    elif data_source in ["math", "math500", "dapo_math", "gsm8k"]:
+    elif data_source in ["openai/gsm8k", "gsm8k"]:
+        results = gsm8k.compute_score(solution_str, ground_truth, extra_info)
+    elif data_source in ["math", "math500", "dapo_math", "DigitalLearningGmbH/MATH-lighteval"]:
         results = math.compute_score(solution_str, ground_truth, extra_info)
     elif data_source in ["gpqa"]:
         results = gpqa.compute_score(solution_str, ground_truth)
