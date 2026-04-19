@@ -1,0 +1,66 @@
+<svg width="1400" height="860" viewBox="0 0 1400 860" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8f4ee"/>
+      <stop offset="100%" stop-color="#edf6f4"/>
+    </linearGradient>
+    <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#224b46"/>
+    </marker>
+    <style>
+      .title { font: 700 38px Arial, sans-serif; fill: #17312d; }
+      .subtitle { font: 500 20px Arial, sans-serif; fill: #46635e; }
+      .label { font: 700 24px Arial, sans-serif; fill: #1d322d; }
+      .body { font: 500 20px Arial, sans-serif; fill: #1d322d; }
+      .small { font: 500 18px Arial, sans-serif; fill: #49645f; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="860" fill="url(#bg3)"/>
+  <text x="70" y="90" class="title">Stage 1: Find the SDPO Feasibility Threshold</text>
+  <text x="70" y="128" class="subtitle">Central question from the README: when does post-training first become net-positive over the base checkpoint?</text>
+
+  <line x1="130" y1="690" x2="1280" y2="690" stroke="#224b46" stroke-width="4"/>
+  <line x1="130" y1="220" x2="130" y2="690" stroke="#224b46" stroke-width="4"/>
+  <text x="1040" y="740" class="label">Checkpoint progress through Stage 1</text>
+  <text x="60" y="215" class="label" transform="rotate(-90 60,215)">delta = post-train minus base</text>
+
+  <line x1="130" y1="490" x2="1280" y2="490" stroke="#8aa39e" stroke-width="2" stroke-dasharray="12 10"/>
+  <text x="145" y="478" class="small">zero gain line</text>
+
+  <path d="M 180 600 C 310 595, 390 560, 500 505 C 620 445, 700 410, 820 350 C 920 300, 1010 285, 1210 250" fill="none" stroke="#cf6d3c" stroke-width="7"/>
+  <text x="1080" y="230" class="label" fill="#cf6d3c">GSM8K</text>
+
+  <path d="M 180 620 C 360 620, 510 605, 650 565 C 760 535, 860 500, 980 440 C 1090 385, 1160 355, 1210 330" fill="none" stroke="#2b6f6a" stroke-width="7"/>
+  <text x="1095" y="330" class="label" fill="#2b6f6a">MATH</text>
+
+  <circle cx="560" cy="475" r="11" fill="#cf6d3c"/>
+  <line x1="560" y1="475" x2="560" y2="690" stroke="#cf6d3c" stroke-width="3" stroke-dasharray="8 8"/>
+  <text x="450" y="725" class="small">hypothesized GSM8K threshold</text>
+
+  <circle cx="890" cy="475" r="11" fill="#2b6f6a"/>
+  <line x1="890" y1="475" x2="890" y2="690" stroke="#2b6f6a" stroke-width="3" stroke-dasharray="8 8"/>
+  <text x="790" y="725" class="small">hypothesized MATH threshold</text>
+
+  <rect x="150" y="170" rx="18" ry="18" width="250" height="95" fill="#f6d9d1" stroke="#8f5144" stroke-width="2"/>
+  <text x="180" y="218" class="label">Below threshold</text>
+  <text x="180" y="248" class="small">weak or noisy gains</text>
+
+  <rect x="530" y="160" rx="18" ry="18" width="360" height="110" fill="#dff0da" stroke="#5b7757" stroke-width="2"/>
+  <text x="565" y="210" class="label">Transition region</text>
+  <text x="565" y="242" class="small">first positive deltas, likely seed-sensitive</text>
+
+  <rect x="960" y="160" rx="18" ry="18" width="270" height="95" fill="#dbe7f6" stroke="#536d91" stroke-width="2"/>
+  <text x="995" y="210" class="label">Above threshold</text>
+  <text x="995" y="240" class="small">repeatable gains more likely</text>
+
+  <rect x="120" y="770" rx="18" ry="18" width="1160" height="55" fill="#224b46"/>
+  <text x="165" y="805" style="font:700 23px Arial, sans-serif; fill:#ffffff;">Decision for the lab: densify checkpoints, add seeds near the threshold, and compare against GRPO at the same rollout budget.</text>
+
+  <rect x="970" y="460" rx="20" ry="20" width="285" height="145" fill="#fffdf8" stroke="#c8beb0" stroke-width="2"/>
+  <text x="1000" y="505" class="label">What we measure</text>
+  <text x="1000" y="542" class="body">pass@1, pass@8, pass@16</text>
+  <text x="1000" y="577" class="body">for base and post-train</text>
+
+  <path d="M 925 560 C 895 560, 860 520, 840 490" fill="none" stroke="#224b46" stroke-width="3" marker-end="url(#arrow3)"/>
+</svg>

@@ -1,0 +1,77 @@
+<svg width="1400" height="820" viewBox="0 0 1400 820" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fff8ef"/>
+      <stop offset="100%" stop-color="#eef5ef"/>
+    </linearGradient>
+    <style>
+      .title { font: 700 38px Arial, sans-serif; fill: #1f2c28; }
+      .subtitle { font: 500 20px Arial, sans-serif; fill: #405951; }
+      .label { font: 700 24px Arial, sans-serif; fill: #20332d; }
+      .body { font: 500 20px Arial, sans-serif; fill: #20332d; }
+      .small { font: 500 18px Arial, sans-serif; fill: #465f57; }
+      .axis { stroke: #334d45; stroke-width: 4; }
+      .tick { stroke: #334d45; stroke-width: 3; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="820" fill="url(#bg2)"/>
+  <text x="70" y="90" class="title">A Simple Summary of the Early-RL Story</text>
+  <text x="70" y="128" class="subtitle">Inspired by the RL Excursions study: early on-policy learning can help, but not uniformly</text>
+
+  <line x1="120" y1="640" x2="1280" y2="640" class="axis"/>
+  <line x1="120" y1="210" x2="120" y2="640" class="axis"/>
+
+  <text x="1260" y="690" class="label">Pretraining progress</text>
+  <text x="60" y="190" class="label" transform="rotate(-90 60,190)">Post-train gain over base</text>
+
+  <rect x="170" y="260" width="220" height="380" rx="24" ry="24" fill="#f5d6d0" stroke="#8c4d43" stroke-width="3"/>
+  <text x="220" y="320" class="label">Too Early</text>
+  <text x="205" y="370" class="body">Sparse rewards</text>
+  <text x="205" y="405" class="body">weak generations</text>
+  <text x="205" y="440" class="body">unstable seeds</text>
+  <text x="205" y="500" class="small">Possible failure mode:</text>
+  <text x="205" y="530" class="small">training looks okay but</text>
+  <text x="205" y="560" class="small">generalization is noisy</text>
+
+  <rect x="470" y="180" width="390" height="460" rx="24" ry="24" fill="#d9ecd3" stroke="#53704f" stroke-width="3"/>
+  <text x="540" y="240" class="label">Promising Window</text>
+  <text x="520" y="295" class="body">Model can produce enough</text>
+  <text x="520" y="330" class="body">useful attempts to learn from</text>
+  <path d="M 520 520 C 600 420, 690 360, 805 290" fill="none" stroke="#2d6a4f" stroke-width="7"/>
+  <circle cx="640" cy="405" r="10" fill="#2d6a4f"/>
+  <circle cx="720" cy="345" r="10" fill="#2d6a4f"/>
+  <text x="520" y="410" class="small">GRPO result to emphasize:</text>
+  <text x="520" y="442" class="small">meaningful gains already show up</text>
+  <text x="520" y="474" class="small">on easier reasoning tasks</text>
+  <text x="520" y="535" class="small">GSM8K looks earlier and cleaner</text>
+
+  <rect x="940" y="250" width="250" height="390" rx="24" ry="24" fill="#d6e4f5" stroke="#4a6285" stroke-width="3"/>
+  <text x="970" y="310" class="label">Harder Tasks</text>
+  <text x="980" y="360" class="body">Still improve over</text>
+  <text x="980" y="395" class="body">base checkpoints, but</text>
+  <text x="980" y="430" class="body">may lag stronger</text>
+  <text x="980" y="465" class="body">post-training pipelines</text>
+  <text x="980" y="530" class="small">MATH is the cautionary case</text>
+
+  <rect x="1230" y="310" width="110" height="330" rx="20" ry="20" fill="#ececec" stroke="#777777" stroke-width="3"/>
+  <text x="1248" y="360" class="label">Late</text>
+  <text x="1248" y="400" class="body">Standard</text>
+  <text x="1248" y="435" class="body">pipeline</text>
+  <text x="1248" y="505" class="small">Strong baseline,</text>
+  <text x="1248" y="535" class="small">but the question is:</text>
+  <text x="1248" y="565" class="small">do we need to wait</text>
+  <text x="1248" y="595" class="small">this long?</text>
+
+  <line x1="280" y1="640" x2="280" y2="658" class="tick"/>
+  <line x1="665" y1="640" x2="665" y2="658" class="tick"/>
+  <line x1="1065" y1="640" x2="1065" y2="658" class="tick"/>
+  <line x1="1280" y1="640" x2="1280" y2="658" class="tick"/>
+  <text x="232" y="705" class="small">under-trained</text>
+  <text x="595" y="705" class="small">early useful region</text>
+  <text x="1030" y="705" class="small">task-dependent gap</text>
+  <text x="1236" y="705" class="small">fully later</text>
+
+  <rect x="70" y="735" width="1260" height="50" rx="18" ry="18" fill="#20332d"/>
+  <text x="120" y="768" style="font:700 22px Arial, sans-serif; fill:#ffffff;">Key message: the interesting question is not whether RL can help eventually, but how early useful self-generated learning signals appear.</text>
+</svg>

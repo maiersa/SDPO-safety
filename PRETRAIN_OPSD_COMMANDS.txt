@@ -1,0 +1,321 @@
+rs stage2-smoke-${USER}-gsm8k-7b-stage2-step47684 --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+CONFIG_NAME=baseline_grpo \
+DATA_PATH=datasets/gsm8k \
+SUFFIX=stage1_smoke_gsm8k_7b_stage2-step47684_seed0 \
+EXP_NAME=STAGE1-SMOKE-gsm8k-7b-stage2-step47684-seed0 \
+REPO_DIR=/dlabscratch1/$USER/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/$USER/output \
+CKPT_DIR=/dlabscratch1/$USER/checkpoints \
+TRAIN_BATCH_SIZE=8 \
+ROLLOUT_BATCH_SIZE=2 \
+MINI_BATCH_SIZE=8 \
+LR=1e-5 \
+MODEL_PATH=/dlabscratch1/$USER/checkpoints/olmo-7b-stage2/stage2-step47684 \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+TRAIN_MAX_SAMPLES=16 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+VAL_ONLY=True \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=-1 \
+SAVE_FREQ=-1 \
+VAL_GENERATION_N=2 \
+TRAINER_GPUS_PER_NODE=4 \
+WANDB_ENTITY=samaier-epfl \
+LOG_VAL_GENERATIONS=4 \
+VALIDATION_DATA_DIR=/dlabscratch1/$USER/output/validation_generations/STAGE2-SMOKE-gsm8k-7b-stage2-step47684-seed0 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=512 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=4096 \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.4 \
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=1 \
+ACTOR_PPO_MICRO_BATCH_SIZE=1 \
+bash /dlabscratch1/$USER/projects/SDPO-safety/runai_grpo_worker.sh
+
+
+python scripts/download_stage1_olmo_checkpoints.py \
+  --model-repo allenai/Olmo-3-1025-7B \
+  --output-root /dlabscratch1/$USER/checkpoints/olmo-7b-stage1 \
+  --revision stage1-step500000
+
+
+rs opsd-sweep-${USER}-7b --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/$USER/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/$USER/output \
+CKPT_DIR=/dlabscratch1/$USER/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/gsm8k \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+STAGE1_ROOT=/dlabscratch1/$USER/checkpoints/olmo-7b-stage1 \
+STAGE2_ROOT=/dlabscratch1/$USER/checkpoints/olmo-7b-stage2 \
+CHECKPOINTS="stage2-step47684 stage2-step32000 stage2-step16000 stage1-step1413814 stage1-step656000" \
+LRS="1e-5" \
+ALPHAS="0.5" \
+DISTILLATION_TOPKS="100" \
+SEEDS="0" \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=32 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=150 \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+TRAINER_GPUS_PER_NODE=4 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/$USER/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+
+rs grpo-sweep-${USER}-7b --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/$USER/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/$USER/output \
+CKPT_DIR=/dlabscratch1/$USER/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/gsm8k \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+STAGE1_ROOT=/dlabscratch1/$USER/checkpoints/olmo-7b-stage1 \
+STAGE2_ROOT=/dlabscratch1/$USER/checkpoints/olmo-7b-stage2 \
+CHECKPOINTS="stage2-step47684 stage2-step32000 stage2-step16000 stage1-step1413814 stage1-step656000" \
+LRS="1e-5" \
+MINI_BATCH_SIZES="8" \
+SEEDS="0" \
+TRAIN_BATCH_SIZE=32 \
+ROLLOUT_BATCH_SIZE=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=150 \
+VAL_ONLY=False \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+SAVE_FREQ=50 \
+TRAINER_GPUS_PER_NODE=4 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=4096 \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.4 \
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=1 \
+ACTOR_PPO_MICRO_BATCH_SIZE=1 \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/$USER/projects/SDPO-safety/experiments/pretrain/run_grpo_sequential_sweep.sh
+
+
+rs opsd-smoke-${USER}-seq --gpu 4.0 --cpu 16 --memory 120G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/gsm8k \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+CONFIG_NAME=sdpo_math_teacher \
+ROLLOUT_SOURCE=student \
+CHECKPOINTS=stage2-step47684,stage2-step32000,stage2-step16000,stage1-step500000,stage1-step656000 \
+LRS=1e-5 \
+ALPHAS=0.5 \
+DISTILLATION_TOPKS=100 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=8 \
+ROLLOUT_BATCH_SIZE=2 \
+PPO_MINI_BATCH_SIZE=8 \
+TRAIN_MAX_SAMPLES=32 \
+VAL_MAX_SAMPLES=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=6 \
+TEST_FREQ=3 \
+SAVE_FREQ=3 \
+VAL_BEFORE_TRAIN=True \
+TRAINER_GPUS_PER_NODE=4 \
+LOG_VAL_GENERATIONS=2 \
+VAL_GENERATION_N=2 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=768 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+
+rs opsd-gsm8k-${USER}-full --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/gsm8k \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+CONFIG_NAME=sdpo_math_teacher \
+ROLLOUT_SOURCE=student \
+CHECKPOINTS=stage1-step500000,stage1-step656000 \
+LRS=1e-5 \
+ALPHAS=0.5 \
+DISTILLATION_TOPKS=100 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+TEST_FREQ=10 \
+SAVE_FREQ=25 \
+VAL_BEFORE_TRAIN=False \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=4 \
+VAL_GENERATION_N=4 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+stage2-step47684,stage2-step32000,stage2-step16000, stage1-step500000
+
+
+
+--------
+
+rs opsd-gsm8k-${USER}-later7b --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/gsm8k \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+CONFIG_NAME=sdpo_math_teacher \
+ROLLOUT_SOURCE=student \
+EXP_PREFIX=OPSD-LATER7B \
+SUFFIX_PREFIX=opsd_later7b \
+CHECKPOINTS="think-sft@main instruct-sft@main instruct-dpo@main instruct@main" \
+LRS="1e-5" \
+ALPHAS="0.5" \
+DISTILLATION_TOPKS="100" \
+SEEDS="0" \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+TEST_FREQ=10 \
+SAVE_FREQ=50 \
+VAL_BEFORE_TRAIN=True \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+### CHECKPOINTS="stage2-step47684 think-sft@main instruct-sft@main instruct-dpo@main instruct@step400 instruct@main" \
+
+rs opsd-gsm8k-${USER}-later7b --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/gsm8k \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+CONFIG_NAME=sdpo_math_teacher \
+ROLLOUT_SOURCE=student \
+EXP_PREFIX=OPSD-LATER7B \
+SUFFIX_PREFIX=opsd_later7b \
+CHECKPOINTS=think-sft@main,instruct-sft@main,instruct-dpo@main,instruct@main \
+LRS=1e-5 \
+ALPHAS=0.5 \
+DISTILLATION_TOPKS=100 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=-1 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+TEST_FREQ=10 \
+SAVE_FREQ=50 \
+VAL_BEFORE_TRAIN=True \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+
+
+rs grpo-gsm8k-${USER}-later7b --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/gsm8k \
+TOKENIZER_PATH=allenai/Olmo-3-7B-Instruct \
+CHECKPOINTS=think-sft@main,instruct-sft@main,instruct-dpo@main,instruct@main \
+LRS=1e-5 \
+MINI_BATCH_SIZES=64 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=300 \
+VAL_ONLY=False \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+SAVE_FREQ=25 \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=8192 \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.6 \
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=1 \
+ACTOR_PPO_MICRO_BATCH_SIZE=1 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_grpo_sequential_sweep.sh
+
