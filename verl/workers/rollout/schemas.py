@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, ProcessorMixin
 
 from verl.tools.schemas import OpenAIFunctionToolCall, OpenAIFunctionToolSchema, ToolResponse
+from verl.utils.chat_template import has_chat_template, render_plain_prompt
 from verl.utils.model import compute_position_id_with_mask
 
 logger = logging.getLogger(__file__)
@@ -231,9 +232,14 @@ class AsyncRolloutRequest(BaseModel):
         tokenize: bool = False,
         return_dict: bool = False,
     ):
-        raw_prompt = processing_class.apply_chat_template(
-            messages, tools=tools, add_generation_prompt=add_generation_prompt, tokenize=False
-        )
+        if isinstance(processing_class, (PreTrainedTokenizer, PreTrainedTokenizerFast)) and not has_chat_template(
+            processing_class
+        ):
+            raw_prompt = render_plain_prompt([message.model_dump(exclude_none=True) for message in messages], add_generation_prompt)
+        else:
+            raw_prompt = processing_class.apply_chat_template(
+                messages, tools=tools, add_generation_prompt=add_generation_prompt, tokenize=False
+            )
         if not tokenize:
             return raw_prompt
 

@@ -38,6 +38,7 @@ from verl.protocol import DataProto
 from verl.single_controller.ray.base import RayResourcePool, RayWorkerGroup
 from verl.utils import hf_processor, hf_tokenizer
 from verl.utils.chat_template import initialize_system_prompt
+from verl.utils.chat_template import has_chat_template, render_plain_prompt
 from verl.utils.dataset.rl_dataset import RLHFDataset, get_dataset_class
 from verl.utils.fs import copy_to_local
 from verl.utils.model import compute_position_id_with_mask
@@ -292,16 +293,23 @@ class AgentLoopBase(ABC):
             )
             prompt_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
         else:
-            prompt_ids = await self.loop.run_in_executor(
-                None,
-                lambda: self.tokenizer.apply_chat_template(
-                    messages,
-                    tools=tools,
-                    add_generation_prompt=True,
-                    tokenize=True,
-                    **self.apply_chat_template_kwargs,
-                ),
-            )
+            if has_chat_template(self.tokenizer):
+                prompt_ids = await self.loop.run_in_executor(
+                    None,
+                    lambda: self.tokenizer.apply_chat_template(
+                        messages,
+                        tools=tools,
+                        add_generation_prompt=True,
+                        tokenize=True,
+                        **self.apply_chat_template_kwargs,
+                    ),
+                )
+            else:
+                plain_prompt = render_plain_prompt(messages, add_generation_prompt=True)
+                prompt_ids = await self.loop.run_in_executor(
+                    None,
+                    lambda: self.tokenizer(plain_prompt, add_special_tokens=True)["input_ids"],
+                )
 
         if remove_system_prompt:
             prompt_ids = prompt_ids[len(self.system_prompt) :]

@@ -10,7 +10,7 @@ LOG_DIR=${LOG_DIR:-/dlabscratch1/${USER}/output}
 CKPT_DIR=${CKPT_DIR:-/dlabscratch1/${USER}/checkpoints}
 WANDB_ENTITY=${WANDB_ENTITY:-samaier-epfl}
 DATA_PATH=${DATA_PATH:-datasets/gsm8k}
-TOKENIZER_PATH=${TOKENIZER_PATH:-allenai/Olmo-3-7B-Instruct}
+TOKENIZER_PATH=${TOKENIZER_PATH:-}
 CONFIG_NAME=${CONFIG_NAME:-sdpo_math_teacher}
 EXP_PREFIX=${EXP_PREFIX:-OPSD-REVERSE}
 SUFFIX_PREFIX=${SUFFIX_PREFIX:-opsd_reverse}
@@ -23,6 +23,7 @@ SEEDS=${SEEDS:-"0"}
 
 STAGE1_ROOT=${STAGE1_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage1}
 STAGE2_ROOT=${STAGE2_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2}
+STAGE3_ROOT=${STAGE3_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage3}
 THINK_SFT_ROOT=${THINK_SFT_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-think-sft}
 INSTRUCT_SFT_ROOT=${INSTRUCT_SFT_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-instruct-sft}
 INSTRUCT_DPO_ROOT=${INSTRUCT_DPO_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-instruct-dpo}
@@ -39,6 +40,10 @@ SAVE_FREQ=${SAVE_FREQ:-50}
 TRAINER_GPUS_PER_NODE=${TRAINER_GPUS_PER_NODE:-4}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-8}
 VAL_GENERATION_N=${VAL_GENERATION_N:-8}
+VAL_DO_SAMPLE=${VAL_DO_SAMPLE:-True}
+VAL_TEMPERATURE=${VAL_TEMPERATURE:-0.6}
+VAL_TOP_P=${VAL_TOP_P:-}
+VAL_TOP_K=${VAL_TOP_K:-}
 VALIDATION_GENERATIONS_ONLY=${VALIDATION_GENERATIONS_ONLY:-False}
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-4096}
 DATA_MAX_PROMPT_LENGTH=${DATA_MAX_PROMPT_LENGTH:-1024}
@@ -63,6 +68,17 @@ normalize_list() {
     echo "$raw" | xargs
 }
 
+dataset_label() {
+    local raw="$1"
+    local label
+
+    label="$(basename "$raw")"
+    label="${label%/}"
+    label="${label// /-}"
+    label="${label//\//-}"
+    printf '%s' "$label"
+}
+
 CHECKPOINTS="$(normalize_list "$CHECKPOINTS")"
 LRS="$(normalize_list "$LRS")"
 ALPHAS="$(normalize_list "$ALPHAS")"
@@ -83,8 +99,20 @@ resolve_model_path() {
         return 0
     fi
 
+    if [[ "$ckpt" == stage3-* ]]; then
+        printf '%s' "${STAGE3_ROOT}/${ckpt}"
+        return 0
+    fi
+
     if [[ "$ckpt" == stage1-* ]]; then
         printf '%s' "${STAGE1_ROOT}/${ckpt}"
+        return 0
+    fi
+
+    # Allow a Stage 3 sweep to reference the final checkpoint as "main"
+    # while keeping the rest of the list in the stage3-step* naming scheme.
+    if [[ "$ckpt" == main && -d "${STAGE3_ROOT}/main" ]]; then
+        printf '%s' "${STAGE3_ROOT}/main"
         return 0
     fi
 
@@ -112,20 +140,6 @@ resolve_model_path() {
     fi
 
     printf '%s' "$ckpt"
-}
-
-resolve_tokenizer_path() {
-    local ckpt="$1"
-    local model_path="$2"
-
-    case "$ckpt" in
-        think-sft@*|instruct-sft@*|instruct-dpo@*|instruct@*|instruct-rl@*)
-            printf '%s' "$model_path"
-            ;;
-        *)
-            printf '%s' "$TOKENIZER_PATH"
-            ;;
-    esac
 }
 
 sanitize_ckpt_label() {
@@ -174,18 +188,19 @@ run_one() {
     local alpha="$3"
     local topk="$4"
     local seed="$5"
-    local model_path tokenizer_path ckpt_label exp_name suffix val_dir exp_ckpt_dir latest_step
+    local model_path tokenizer_path ckpt_label data_label exp_name suffix val_dir exp_ckpt_dir latest_step
 
     model_path="$(resolve_model_path "$ckpt")"
     if [[ ! -d "$model_path" ]]; then
         echo "Missing checkpoint directory: $model_path" >&2
         return 1
     fi
-    tokenizer_path="$(resolve_tokenizer_path "$ckpt" "$model_path")"
+    tokenizer_path="$TOKENIZER_PATH"
     ckpt_label="$(sanitize_ckpt_label "$ckpt")"
+    data_label="$(dataset_label "$DATA_PATH")"
 
-    exp_name="${EXP_PREFIX}-gsm8k-${ckpt_label}-lr${lr}-a${alpha}-k${topk}-seed${seed}"
-    suffix="${SUFFIX_PREFIX}_gsm8k_${ckpt_label}_lr${lr}_a${alpha}_k${topk}_seed${seed}"
+    exp_name="${EXP_PREFIX}-${data_label}-${ckpt_label}-lr${lr}-a${alpha}-k${topk}-seed${seed}"
+    suffix="${SUFFIX_PREFIX}_${data_label}_${ckpt_label}_lr${lr}_a${alpha}_k${topk}_seed${seed}"
     val_dir="${LOG_DIR}/validation_generations/${exp_name}"
     exp_ckpt_dir="$(checkpoint_dir_for_exp "$exp_name")"
 
@@ -209,7 +224,7 @@ run_one() {
     echo "Running OPSD sweep item"
     echo "Checkpoint: $ckpt"
     echo "Model path: $model_path"
-    echo "Tokenizer path: $tokenizer_path"
+    echo "Tokenizer path: ${tokenizer_path:-<checkpoint default>}"
     echo "LR: $lr | Alpha: $alpha | Top-k: $topk | Seed: $seed"
     echo "Experiment: $exp_name"
     echo "=============================================================="
@@ -233,8 +248,8 @@ run_one() {
     ROLLOUT_SOURCE=$ROLLOUT_SOURCE \
     MODEL_PATH=$model_path \
     TOKENIZER_PATH=$tokenizer_path \
-    TRAIN_MAX_SAMPLES=-1 \
-    VAL_MAX_SAMPLES=-1 \
+    TRAIN_MAX_SAMPLES=$TRAIN_MAX_SAMPLES \
+    VAL_MAX_SAMPLES=$VAL_MAX_SAMPLES \
     TOTAL_EPOCHS=$TOTAL_EPOCHS \
     TOTAL_TRAINING_STEPS=$TOTAL_TRAINING_STEPS \
     VAL_BEFORE_TRAIN=$VAL_BEFORE_TRAIN \
@@ -244,6 +259,10 @@ run_one() {
     WANDB_ENTITY=$WANDB_ENTITY \
     LOG_VAL_GENERATIONS=$LOG_VAL_GENERATIONS \
     VAL_GENERATION_N=$VAL_GENERATION_N \
+    VAL_DO_SAMPLE=$VAL_DO_SAMPLE \
+    VAL_TEMPERATURE=$VAL_TEMPERATURE \
+    VAL_TOP_P=$VAL_TOP_P \
+    VAL_TOP_K=$VAL_TOP_K \
     VALIDATION_DATA_DIR=$val_dir \
     VALIDATION_GENERATIONS_ONLY=$VALIDATION_GENERATIONS_ONLY \
     MAX_MODEL_LEN=$MAX_MODEL_LEN \

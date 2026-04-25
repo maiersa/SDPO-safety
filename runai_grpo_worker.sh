@@ -27,6 +27,10 @@ SAVE_FREQ=${SAVE_FREQ:-"50"}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-"0"}
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-""}
 VAL_GENERATION_N=${VAL_GENERATION_N:-"4"}
+VAL_DO_SAMPLE=${VAL_DO_SAMPLE:-"True"}
+VAL_TEMPERATURE=${VAL_TEMPERATURE:-"0.6"}
+VAL_TOP_P=${VAL_TOP_P:-""}
+VAL_TOP_K=${VAL_TOP_K:-""}
 VALIDATION_GENERATIONS_ONLY=${VALIDATION_GENERATIONS_ONLY:-"False"}
 RESUME_MODE=${RESUME_MODE:-"auto"}
 RESUME_FROM_PATH=${RESUME_FROM_PATH:-""}
@@ -46,6 +50,7 @@ REPO_DIR=${REPO_DIR:-"/dlabscratch1/${USER}/projects/SDPO-safety"}
 LOG_DIR=${LOG_DIR:-"/dlabscratch1/${USER}/output"}
 CKPT_DIR=${CKPT_DIR:-"/dlabscratch1/${USER}/checkpoints"}
 TRAINER_GPUS_PER_NODE=${TRAINER_GPUS_PER_NODE:-"1"}
+PROJECT_NAME=${PROJECT_NAME:-"GRPO-MathTeacher-${USER}"}
 
 SUFFIX=${SUFFIX:-"runai_grpo"}
 
@@ -170,6 +175,7 @@ ARGS="data.train_batch_size=$TRAIN_BATCH_SIZE \
 data.train_max_samples=$TRAIN_MAX_SAMPLES \
 data.val_max_samples=$VAL_MAX_SAMPLES \
 trainer.group_name=GRPO-runai \
+trainer.project_name=$PROJECT_NAME \
 trainer.n_gpus_per_node=$TRAINER_GPUS_PER_NODE \
 trainer.total_epochs=$TOTAL_EPOCHS \
 trainer.val_before_train=$VAL_BEFORE_TRAIN \
@@ -193,6 +199,8 @@ reward_model.launch_reward_fn_async=$ASYNC_REWARD_FUNCTION \
 +reward_model.reward_kwargs.max_workers=$REWARD_MAX_WORKERS \
 algorithm.rollout_correction.rollout_is=token \
 actor_rollout_ref.rollout.val_kwargs.n=$VAL_GENERATION_N \
+actor_rollout_ref.rollout.val_kwargs.do_sample=$VAL_DO_SAMPLE \
+actor_rollout_ref.rollout.val_kwargs.temperature=$VAL_TEMPERATURE \
 vars.dir=$REPO_DIR \
 vars.log_dir=$LOG_DIR \
 vars.ckpt_dir=$CKPT_DIR"
@@ -203,6 +211,14 @@ fi
 
 if [[ "$LOG_VAL_GENERATIONS" != "0" ]]; then
     ARGS="$ARGS trainer.log_val_generations=$LOG_VAL_GENERATIONS"
+fi
+
+if [[ -n "$VAL_TOP_P" ]]; then
+    ARGS="$ARGS actor_rollout_ref.rollout.val_kwargs.top_p=$VAL_TOP_P"
+fi
+
+if [[ -n "$VAL_TOP_K" ]]; then
+    ARGS="$ARGS actor_rollout_ref.rollout.val_kwargs.top_k=$VAL_TOP_K"
 fi
 
 if [[ -n "$VALIDATION_DATA_DIR" ]]; then
@@ -244,6 +260,7 @@ echo "Rollout GPU memory utilization: $ROLLOUT_GPU_MEMORY_UTILIZATION"
 echo "Rollout max batched tokens: $ROLLOUT_MAX_NUM_BATCHED_TOKENS"
 echo "Rollout/ref logprob micro-batch per GPU: $ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE"
 echo "Actor PPO micro-batch per GPU: $ACTOR_PPO_MICRO_BATCH_SIZE"
+echo "Validation sampling: do_sample=$VAL_DO_SAMPLE temperature=$VAL_TEMPERATURE top_p=${VAL_TOP_P:-<default>} top_k=${VAL_TOP_K:-<default>} n=$VAL_GENERATION_N"
 echo "----------------------------------------------------------------"
 
 bash training/verl_training.sh "$EXP_NAME" "$CONFIG_NAME" "$DATA_PATH" $ARGS

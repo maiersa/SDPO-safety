@@ -31,6 +31,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
+from verl.utils.chat_template import has_chat_template, render_plain_prompt
 from verl.utils.import_utils import load_extern_object
 
 logger = logging.getLogger(__name__)
@@ -243,9 +244,13 @@ class RLHFDataset(Dataset):
                         if self.tool_schemas is not None:
                             apply_kwargs["tools"] = self.tool_schemas
 
-                        return len(
-                            tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True, **apply_kwargs)
-                        )
+                        if has_chat_template(tokenizer):
+                            return len(
+                                tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True, **apply_kwargs)
+                            )
+
+                        plain_prompt = render_plain_prompt(doc[prompt_key], add_generation_prompt=True)
+                        return len(tokenizer(plain_prompt, add_special_tokens=True)["input_ids"])
                     except Exception:
                         print("Error processing one of the samples, skipping...")
                         traceback.print_exc()

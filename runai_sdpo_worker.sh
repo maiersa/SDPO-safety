@@ -14,11 +14,16 @@ PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
 LR=${LR:-"1e-5"}
 ALPHA=${ALPHA:-"0.5"}
 DISTILLATION_TOPK=${DISTILLATION_TOPK:-100}
+TEACHER_UPDATE_RATE=${TEACHER_UPDATE_RATE:-"0.05"}
 DONT_REPROMPT_ON_SELF_SUCCESS=${DONT_REPROMPT_ON_SELF_SUCCESS:-"True"}
 ROLLOUT_SOURCE=${ROLLOUT_SOURCE:-"student"}
 MODEL_PATH=${MODEL_PATH:-"Qwen/Qwen2.5-7B-Instruct"}
 TOKENIZER_PATH=${TOKENIZER_PATH:-""}
 VAL_GENERATION_N=${VAL_GENERATION_N:-"16"}
+VAL_DO_SAMPLE=${VAL_DO_SAMPLE:-"True"}
+VAL_TEMPERATURE=${VAL_TEMPERATURE:-"0.6"}
+VAL_TOP_P=${VAL_TOP_P:-""}
+VAL_TOP_K=${VAL_TOP_K:-""}
 SELF_DISTILL_REPROMPT_TEMPLATE=${SELF_DISTILL_REPROMPT_TEMPLATE:-""}
 SELF_DISTILL_SOLUTION_TEMPLATE=${SELF_DISTILL_SOLUTION_TEMPLATE:-""}
 SELF_DISTILL_FEEDBACK_TEMPLATE=${SELF_DISTILL_FEEDBACK_TEMPLATE:-""}
@@ -178,16 +183,27 @@ actor_rollout_ref.actor.self_distillation.distillation_topk=$DISTILLATION_TOPK \
 actor_rollout_ref.actor.self_distillation.dont_reprompt_on_self_success=$DONT_REPROMPT_ON_SELF_SUCCESS \
 actor_rollout_ref.actor.self_distillation.rollout_source=$ROLLOUT_SOURCE \
 actor_rollout_ref.actor.self_distillation.alpha=$ALPHA \
+actor_rollout_ref.actor.self_distillation.teacher_update_rate=$TEACHER_UPDATE_RATE \
 actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
 actor_rollout_ref.model.path=$MODEL_PATH \
 algorithm.rollout_correction.rollout_is=token \
 actor_rollout_ref.rollout.val_kwargs.n=$VAL_GENERATION_N \
+actor_rollout_ref.rollout.val_kwargs.do_sample=$VAL_DO_SAMPLE \
+actor_rollout_ref.rollout.val_kwargs.temperature=$VAL_TEMPERATURE \
 vars.dir=$REPO_DIR \
 vars.log_dir=$LOG_DIR \
 vars.ckpt_dir=$CKPT_DIR"
 
 if [[ -n "$TOKENIZER_PATH" ]]; then
     ARGS="$ARGS actor_rollout_ref.model.tokenizer_path=$TOKENIZER_PATH critic.model.tokenizer_path=$TOKENIZER_PATH"
+fi
+
+if [[ -n "$VAL_TOP_P" ]]; then
+    ARGS="$ARGS actor_rollout_ref.rollout.val_kwargs.top_p=$VAL_TOP_P"
+fi
+
+if [[ -n "$VAL_TOP_K" ]]; then
+    ARGS="$ARGS actor_rollout_ref.rollout.val_kwargs.top_k=$VAL_TOP_K"
 fi
 
 if [[ -n "$SELF_DISTILL_REPROMPT_TEMPLATE" ]]; then
@@ -242,6 +258,7 @@ echo "Repo: $REPO_DIR"
 echo "Data: $DATA_PATH"
 echo "Model: $MODEL_PATH"
 echo "Tokenizer path: ${TOKENIZER_PATH:-<default>}"
+echo "Validation sampling: n=$VAL_GENERATION_N do_sample=$VAL_DO_SAMPLE temperature=$VAL_TEMPERATURE top_p=${VAL_TOP_P:-<config>} top_k=${VAL_TOP_K:-<config>}"
 echo "Conda env requested: $CONDA_ENV"
 echo "----------------------------------------------------------------"
 

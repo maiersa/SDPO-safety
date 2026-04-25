@@ -9,10 +9,12 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/datasets}"
 PREPARE_GSM8K="${PREPARE_GSM8K:-true}"
 PREPARE_MATH="${PREPARE_MATH:-true}"
+PREPARE_OPENMATHINSTRUCT="${PREPARE_OPENMATHINSTRUCT:-false}"
 FORCE="${FORCE:-false}"
 
 GSM8K_DIR="$DATA_ROOT/gsm8k"
 MATH_DIR="$DATA_ROOT/math"
+OPENMATHINSTRUCT_DIR="$DATA_ROOT/openmathinstruct"
 
 mkdir -p "$DATA_ROOT"
 
@@ -44,8 +46,15 @@ if [[ "$PREPARE_MATH" == "true" ]]; then
     prepare_dataset "MATH" "$MATH_DIR" "$PROJECT_ROOT/examples/data_preprocess/math_dataset.py"
 fi
 
+if [[ "$PREPARE_OPENMATHINSTRUCT" == "true" ]]; then
+    prepare_dataset "OpenMathInstruct" "$OPENMATHINSTRUCT_DIR" "$PROJECT_ROOT/examples/data_preprocess/openmathinstruct.py"
+fi
+
 echo
 
 echo "Stage 1 datasets ready."
 echo "GSM8K: $GSM8K_DIR"
 echo "MATH:  $MATH_DIR"
+if [[ "$PREPARE_OPENMATHINSTRUCT" == "true" ]]; then
+    echo "OPENMATHINSTRUCT: $OPENMATHINSTRUCT_DIR"
+fi

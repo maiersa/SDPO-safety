@@ -60,6 +60,7 @@ from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, shou
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.import_utils import load_class_from_fqn
+from verl.utils.chat_template import has_chat_template, render_plain_prompt
 from verl.utils.model import compute_position_id_with_mask
 from verl.utils.metric import reduce_metrics
 from verl.utils.reward_score.feedback.constitution_teacher import (
@@ -757,17 +758,28 @@ class RayPPOTrainer:
 
     def _tokenize_messages_for_generation(self, messages: list[list[dict[str, str]]], max_length: int) -> dict[str, torch.Tensor]:
         apply_chat_template_kwargs = dict(self.config.data.apply_chat_template_kwargs or {})
-        tokenized = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-            return_dict=True,
-            tokenize=True,
-            **apply_chat_template_kwargs,
-        )
+        if has_chat_template(self.tokenizer):
+            tokenized = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+                return_dict=True,
+                tokenize=True,
+                **apply_chat_template_kwargs,
+            )
+        else:
+            plain_prompts = [render_plain_prompt(prompt_messages, add_generation_prompt=True) for prompt_messages in messages]
+            tokenized = self.tokenizer(
+                plain_prompts,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+                add_special_tokens=True,
+            )
         return {
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
@@ -984,18 +996,29 @@ class RayPPOTrainer:
 
         messages = [_build_teacher_message(i) for i in range(batch_size)]
         enable_thinking = self.config.data.apply_chat_template_kwargs.get("enable_thinking", True) if self.config.data.apply_chat_template_kwargs else True
-        teacher_prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            return_tensors="pt",
-            return_dict=True,
-            continue_final_message=False,
-            add_generation_prompt=True,
-            enable_thinking=enable_thinking,
-            max_length=self_distillation_cfg.max_reprompt_len,
-            padding=True,
-            truncation=True,
-        )
+        if has_chat_template(self.tokenizer):
+            teacher_prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                return_tensors="pt",
+                return_dict=True,
+                continue_final_message=False,
+                add_generation_prompt=True,
+                enable_thinking=enable_thinking,
+                max_length=self_distillation_cfg.max_reprompt_len,
+                padding=True,
+                truncation=True,
+            )
+        else:
+            plain_prompts = [render_plain_prompt(prompt_messages, add_generation_prompt=True) for prompt_messages in messages]
+            teacher_prompt = self.tokenizer(
+                plain_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self_distillation_cfg.max_reprompt_len,
+                add_special_tokens=True,
+            )
         teacher_input_ids = torch.cat([teacher_prompt["input_ids"].to(device), responses], dim=1)
         teacher_attention_mask = torch.cat([teacher_prompt["attention_mask"].to(device), response_mask], dim=1)
         teacher_position_ids = compute_position_id_with_mask(teacher_attention_mask)
