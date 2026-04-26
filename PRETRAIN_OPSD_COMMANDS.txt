@@ -159,7 +159,7 @@ bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_se
 # - sampled validation with temperature 0.6
 # - keep benchmark eval (GSM8K/MATH) separate from this training job
 # - point DATA_PATH at your OpenMathInstruct-style dataset root once prepared
-rs opsd-openmath-${USER}-stage3-rlx --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+rs opsd-om-${USER}-s3-ff-ft-fv --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
 USER=$USER \
 CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
 REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
@@ -169,13 +169,63 @@ WANDB_ENTITY=samaier-epfl \
 DATA_PATH=datasets/openmathinstruct \
 CONFIG_NAME=sdpo_math_teacher \
 ROLLOUT_SOURCE=student \
-EXP_PREFIX=OPSD-OPENMATH-STAGE3-RLX \
-SUFFIX_PREFIX=opsd_openmath_stage3_rlx \
+EXP_PREFIX=OPSD-OPENMATH-STAGE3-RLX-FORMATFIX-FIXEDTEACHER-FULLVOCAB \
+SUFFIX_PREFIX=opsd_openmath_stage3_rlx_formatfix_fixedteacher_fullvocab \
 STAGE3_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage3 \
 CHECKPOINTS=stage3-step1000,stage3-step4000,stage3-step8000,main \
 LRS=1e-5 \
 ALPHAS=0.5 \
-DISTILLATION_TOPKS=100 \
+DISTILLATION_TOPKS=null \
+TEACHER_UPDATE_RATE=0.0 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=4096 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+TEST_FREQ=10 \
+SAVE_FREQ=25 \
+VAL_BEFORE_TRAIN=True \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VAL_DO_SAMPLE=True \
+VAL_TEMPERATURE=0.6 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+
+# Stage-2 OpenMathInstruct OPSD run:
+# - format-aware math teacher prompt from code
+# - full-vocab distillation
+# - lightly moving EMA teacher
+# - compare alpha=0.5 against forward KL alpha=0.0
+rs opsd-om-${USER}-s2-ema02-fv-a2 --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/openmathinstruct \
+CONFIG_NAME=sdpo_math_teacher \
+ROLLOUT_SOURCE=student \
+EXP_PREFIX=OPSD-OPENMATH-STAGE2-FORMATFIX-EMA02-FULLVOCAB \
+SUFFIX_PREFIX=opsd_openmath_stage2_formatfix_ema02_fullvocab \
+STAGE2_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2 \
+CHECKPOINTS=stage2-step16000,stage2-step32000,stage2-step47684 \
+LRS=1e-5 \
+ALPHAS=0.5,0.0 \
+DISTILLATION_TOPKS=null \
+TEACHER_UPDATE_RATE=0.2 \
 SEEDS=0 \
 TRAIN_BATCH_SIZE=64 \
 ROLLOUT_BATCH_SIZE=8 \
