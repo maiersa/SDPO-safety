@@ -481,14 +481,25 @@ class RayPPOTrainer:
         run_dump_path = os.path.join(dump_path, self.generation_dump_run_id)
         os.makedirs(run_dump_path, exist_ok=True)
         filename = os.path.join(run_dump_path, f"step_{self.global_steps}.jsonl")
+        summary_filename = os.path.join(run_dump_path, f"step_{self.global_steps}_summary.json")
 
         n = len(inputs)
+        output_texts = ["" if output is None else str(output) for output in outputs]
+        output_is_empty = [text.strip() == "" for text in output_texts]
+        output_contains_boxed = [r"\boxed{" in text for text in output_texts]
+        output_contains_hash_answer = ["####" in text for text in output_texts]
+        output_char_len = [len(text) for text in output_texts]
+
         base_data = {
             "input": inputs,
             "output": outputs,
             "gts": gts,
             "score": scores,
             "step": [self.global_steps] * n,
+            "output_is_empty": output_is_empty,
+            "output_contains_boxed": output_contains_boxed,
+            "output_contains_hash_answer": output_contains_hash_answer,
+            "output_char_len": output_char_len,
         }
 
         for k, v in reward_extra_infos_dict.items():
@@ -512,7 +523,25 @@ class RayPPOTrainer:
         with open(filename, "w") as f:
             f.write("\n".join(lines) + "\n")
 
+        summary = {
+            "step": self.global_steps,
+            "num_rows": n,
+            "num_dumped_rows": len(indices),
+            "empty_outputs": int(sum(output_is_empty)),
+            "boxed_outputs": int(sum(output_contains_boxed)),
+            "hash_answer_outputs": int(sum(output_contains_hash_answer)),
+            "mean_output_char_len": float(np.mean(output_char_len)) if output_char_len else 0.0,
+        }
+        numeric_scores = [score for score in scores if isinstance(score, (int, float))]
+        if numeric_scores:
+            summary["mean_score"] = float(np.mean(numeric_scores))
+
+        with open(summary_filename, "w") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+
         print(f"Dumped generations to {filename}")
+        print(f"Generation dump summary: {summary}")
 
     def _log_rollout_data(
         self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str
@@ -742,16 +771,22 @@ class RayPPOTrainer:
         return teacher_messages
 
     def _build_math_teacher_messages(
-        self, raw_prompts: list[list[dict[str, str]]], extra_infos: list[dict[str, Any]]
+        self,
+        raw_prompts: list[list[dict[str, str]]],
+        extra_infos: list[dict[str, Any]],
+        data_sources: Optional[list[str]] = None,
     ) -> list[list[dict[str, str]]]:
         teacher_messages = []
-        for messages, extra_info in zip(raw_prompts, extra_infos, strict=True):
+        if data_sources is None:
+            data_sources = [None] * len(raw_prompts)
+        for messages, extra_info, data_source in zip(raw_prompts, extra_infos, data_sources, strict=True):
             system_messages = list(messages[:-1])
             problem_text = extra_info.get("question") or messages[-1]["content"]
             solution_text = extra_info.get("answer") or ""
             teacher_prompt = build_math_teacher_prompt(
                 problem_text=problem_text,
                 solution_text=solution_text,
+                data_source=data_source,
             )
             teacher_messages.append(system_messages + [{"role": "user", "content": teacher_prompt}])
         return teacher_messages
@@ -801,7 +836,8 @@ class RayPPOTrainer:
             teacher_messages = self._build_constitution_teacher_messages(raw_prompts, constitution_text)
         elif teacher_prompt_type == "math_reference":
             extra_infos = list(gen_batch.non_tensor_batch["extra_info"])
-            teacher_messages = self._build_math_teacher_messages(raw_prompts, extra_infos)
+            data_sources = list(gen_batch.non_tensor_batch.get("data_source", [None] * len(raw_prompts)))
+            teacher_messages = self._build_math_teacher_messages(raw_prompts, extra_infos, data_sources)
         else:
             raise ValueError(f"Unsupported SDPO teacher_prompt_type: {teacher_prompt_type}")
 
@@ -950,9 +986,11 @@ class RayPPOTrainer:
                 ]
             if teacher_prompt_type == "math_reference":
                 extra_info = batch.non_tensor_batch["extra_info"][i]
+                data_source = batch.non_tensor_batch.get("data_source", [None] * batch_size)[i]
                 teacher_prompt = build_math_teacher_prompt(
                     problem_text=extra_info.get("question") or prompt_texts[i],
                     solution_text=extra_info.get("answer") or "",
+                    data_source=data_source,
                 )
                 return system_messages + [
                     {"role": "user", "content": teacher_prompt},
@@ -1182,12 +1220,14 @@ class RayPPOTrainer:
             elif val_teacher_prompt_type == "math_reference":
                 raw_prompts = test_batch.non_tensor_batch["raw_prompt"]
                 extra_infos = test_batch.non_tensor_batch["extra_info"]
+                data_sources = test_batch.non_tensor_batch.get("data_source", [None] * len(raw_prompts))
                 teacher_prompt_texts = [
                     build_math_teacher_prompt(
                         problem_text=extra_info.get("question") or messages[-1]["content"],
                         solution_text=extra_info.get("answer") or "",
+                        data_source=data_source,
                     )
-                    for messages, extra_info in zip(raw_prompts, extra_infos, strict=True)
+                    for messages, extra_info, data_source in zip(raw_prompts, extra_infos, data_sources, strict=True)
                 ]
             else:
                 teacher_prompt_texts = [None] * len(input_texts)
