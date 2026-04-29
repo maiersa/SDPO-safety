@@ -19,6 +19,8 @@ CHECKPOINTS="${CHECKPOINTS:?Set CHECKPOINTS to a comma-separated list of checkpo
 #   base checkpoints: PROMPT_MODE=base   -> 8-shot
 #   trained ckpts:    PROMPT_MODE=trained -> 0-shot
 PROMPT_MODE="${PROMPT_MODE:-trained}"
+PROMPT_STYLE="${PROMPT_STYLE:-rlx}"
+ANSWER_FORMAT="${ANSWER_FORMAT:-auto}"
 TEMPERATURE="${TEMPERATURE:-0.6}"
 TOP_P="${TOP_P:-1.0}"
 TOP_K="${TOP_K:-}"
@@ -32,6 +34,11 @@ NUM_FEWSHOT="${NUM_FEWSHOT:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/pretrain_benchmarks}"
 GSM8K_TRAIN_PATH="${GSM8K_TRAIN_PATH:-datasets/gsm8k/train.parquet}"
 GSM8K_EVAL_PATH="${GSM8K_EVAL_PATH:-datasets/gsm8k/test.parquet}"
+BACKEND="${BACKEND:-hf}"
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-false}"
 SEED="${SEED:-1}"
 DEVICE_MAP="${DEVICE_MAP:-auto}"
 TORCH_DTYPE="${TORCH_DTYPE:-auto}"
@@ -42,6 +49,8 @@ args=(
   "$PROJECT_ROOT/scripts/eval_pretrain_benchmarks.py"
   --tasks "$TASKS"
   --prompt-mode "$PROMPT_MODE"
+  --prompt-style "$PROMPT_STYLE"
+  --answer-format "$ANSWER_FORMAT"
   --temperature "$TEMPERATURE"
   --top-p "$TOP_P"
   --num-samples "$NUM_SAMPLES"
@@ -51,6 +60,9 @@ args=(
   --output-dir "$OUTPUT_DIR"
   --gsm8k-train-path "$GSM8K_TRAIN_PATH"
   --gsm8k-eval-path "$GSM8K_EVAL_PATH"
+  --backend "$BACKEND"
+  --tensor-parallel-size "$TENSOR_PARALLEL_SIZE"
+  --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
   --seed "$SEED"
   --device-map "$DEVICE_MAP"
   --torch-dtype "$TORCH_DTYPE"
@@ -67,6 +79,14 @@ fi
 
 if [[ -n "$MAX_PROMPT_TOKENS" ]]; then
   args+=(--max-prompt-tokens "$MAX_PROMPT_TOKENS")
+fi
+
+if [[ -n "$MAX_MODEL_LEN" ]]; then
+  args+=(--max-model-len "$MAX_MODEL_LEN")
+fi
+
+if [[ "$ENFORCE_EAGER" == "true" ]]; then
+  args+=(--enforce-eager)
 fi
 
 if [[ -n "$MAX_EXAMPLES" ]]; then

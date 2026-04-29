@@ -14,6 +14,7 @@
 
 import random
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ from verl.trainer.ppo.core_algos import (
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
     compute_grpo_vectorized_outcome_advantage,
+    compute_self_distillation_loss,
     compute_rloo_outcome_advantage,
     compute_rloo_vectorized_outcome_advantage,
     get_adv_estimator_fn,
@@ -217,6 +219,44 @@ def _rand_mask(batch_size: int, seq_len: int) -> torch.Tensor:
     if len(rows_without_one) > 0:
         mask[rows_without_one, -1] = 1.0
     return mask
+
+
+def test_self_distillation_pointwise_kl_clip_caps_full_vocab_entries():
+    student_all_log_probs = torch.log_softmax(torch.tensor([[[-100.0, 0.0, -100.0]]]), dim=-1)
+    teacher_all_log_probs = torch.log_softmax(torch.tensor([[[0.0, -100.0, -100.0]]]), dim=-1)
+    response_mask = torch.ones(1, 1)
+    sampled_log_probs = torch.zeros(1, 1)
+
+    base_config = SimpleNamespace(
+        full_logit_distillation=True,
+        distillation_topk=None,
+        distillation_add_tail=True,
+        alpha=0.0,
+        is_clip=None,
+        pointwise_kl_clip=None,
+    )
+    unclipped_loss, _ = compute_self_distillation_loss(
+        student_log_probs=sampled_log_probs,
+        teacher_log_probs=sampled_log_probs,
+        response_mask=response_mask,
+        self_distillation_config=base_config,
+        student_all_log_probs=student_all_log_probs,
+        teacher_all_log_probs=teacher_all_log_probs,
+    )
+
+    clipped_config = SimpleNamespace(**{**base_config.__dict__, "pointwise_kl_clip": 0.05})
+    clipped_loss, metrics = compute_self_distillation_loss(
+        student_log_probs=sampled_log_probs,
+        teacher_log_probs=sampled_log_probs,
+        response_mask=response_mask,
+        self_distillation_config=clipped_config,
+        student_all_log_probs=student_all_log_probs,
+        teacher_all_log_probs=teacher_all_log_probs,
+    )
+
+    assert unclipped_loss > 10.0
+    assert clipped_loss < 0.06
+    assert metrics["self_distillation/pointwise_kl_clipped_token_frac"] > 0.0
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-DEFAULT_GSM8K_STOPS = ["\n\nQuestion:", "\nQuestion:", "\n\nProblem:", "\nProblem:"]
+DEFAULT_GSM8K_STOPS = ["\n\nQuestion:", "\nQuestion:", "\n\nProblem:", "\nProblem:", "\n\nUser:", "\nUser:"]
 SOLUTION_CLIP_CHARS = 300
 
 
@@ -37,8 +38,7 @@ class TaskSpec:
     name: str
     train_path: Path
     eval_path: Path
-    prompt_builder: Callable[[str, list[dict[str, str]], str], str]
-    scorer: Callable[[str, str], float]
+    prompt_builder: Callable[[str, list[dict[str, str]], str, str], str]
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,22 @@ def parse_args() -> argparse.Namespace:
         help="Checkpoint path or NAME=PATH. Can be passed multiple times.",
     )
     parser.add_argument("--prompt-mode", choices=["base", "trained"], required=True)
+    parser.add_argument(
+        "--prompt-style",
+        choices=["rlx", "boxed", "validation_chat"],
+        default="rlx",
+        help=(
+            "Prompt family. rlx is the GSM8K Question/Answer prompt with #### answers; "
+            "boxed asks for \\boxed{} in plain text; validation_chat mimics the decoded "
+            "verl validation prompt without relying on a tokenizer chat template."
+        ),
+    )
+    parser.add_argument(
+        "--answer-format",
+        choices=["auto", "gsm8k_hash", "boxed", "flexible_numeric"],
+        default="auto",
+        help="Scoring/extraction format. auto uses flexible_numeric for rlx and boxed for boxed/validation_chat.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/pretrain_benchmarks"))
     parser.add_argument("--gsm8k-train-path", type=Path, default=Path("datasets/gsm8k/train.parquet"))
     parser.add_argument("--gsm8k-eval-path", type=Path, default=Path("datasets/gsm8k/test.parquet"))
@@ -80,6 +96,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-examples", type=int, default=None, help="Optional held-out example cap for smoke tests.")
     parser.add_argument("--stop-sequence", action="append", default=[], help="Stop sequence. Can be repeated.")
     parser.add_argument("--add-default-stops", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--backend", choices=["hf", "vllm"], default="hf", help="Generation backend.")
+    parser.add_argument("--tensor-parallel-size", type=int, default=1, help="vLLM tensor parallel size.")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9, help="vLLM GPU memory utilization.")
+    parser.add_argument("--max-model-len", type=int, default=None, help="Optional vLLM max model length.")
+    parser.add_argument("--enforce-eager", action="store_true", help="Disable CUDA graph capture in vLLM.")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--torch-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
@@ -147,34 +168,122 @@ def load_gsm8k_exemplars(train_path: Path, num_fewshot: int) -> list[dict[str, s
     exemplars = []
     for row in train_df.head(num_fewshot).to_dict("records"):
         extra = extract_map(row["extra_info"])
+        ground_truth = str(extract_map(row["reward_model"])["ground_truth"])
         answer = str(extra.get("answer", "")).strip()
         if "####" not in answer:
-            answer = f"{answer}\n#### {extract_map(row['reward_model'])['ground_truth']}"
-        exemplars.append({"question": str(extra["question"]).strip(), "answer": answer})
+            answer = f"{answer}\n#### {ground_truth}"
+        boxed_answer = answer
+        if r"\boxed{" not in boxed_answer:
+            boxed_answer = f"{answer}\nTherefore, the final answer is \\boxed{{{ground_truth}}}."
+        exemplars.append(
+            {
+                "question": str(extra["question"]).strip(),
+                "answer": answer,
+                "boxed_answer": boxed_answer,
+                "ground_truth": ground_truth,
+            }
+        )
     return exemplars
 
 
-def gsm8k_prompt(question: str, exemplars: list[dict[str, str]], prompt_mode: str) -> str:
-    suffix = 'Let\'s think step by step and output the final answer after "####".'
-    if prompt_mode == "base":
-        blocks = []
-        for example in exemplars:
-            blocks.append(f"Question: {example['question']}\nAnswer: {example['answer']}")
-        blocks.append(f"Question: {question}\nAnswer: {suffix}")
-        return "\n\n".join(blocks)
-    return f"Question: {question}\nAnswer: {suffix}"
+def gsm8k_prompt(question: str, exemplars: list[dict[str, str]], prompt_mode: str, prompt_style: str) -> str:
+    if prompt_style == "rlx":
+        suffix = 'Let\'s think step by step and output the final answer after "####".'
+        if prompt_mode == "base":
+            blocks = []
+            for example in exemplars:
+                blocks.append(f"Question: {example['question']}\nAnswer: {example['answer']}")
+            blocks.append(f"Question: {question}\nAnswer: {suffix}")
+            return "\n\n".join(blocks)
+        return f"Question: {question}\nAnswer: {suffix}"
+
+    boxed_suffix = r"Let's think step by step and output the final answer within \boxed{}."
+    if prompt_style == "boxed":
+        if prompt_mode == "base":
+            blocks = []
+            for example in exemplars:
+                blocks.append(f"Problem: {example['question']}\nSolution: {example['boxed_answer']}")
+            blocks.append(f"Problem: {question}\nSolution: {boxed_suffix}")
+            return "\n\n".join(blocks)
+        return f"Problem: {question}\nSolution: {boxed_suffix}"
+
+    if prompt_style == "validation_chat":
+        # Decoded verl validation prompts for OLMo-style chat tokenizers look like
+        # "User: ...\n\nAssistant:" after special tokens are skipped.
+        if prompt_mode == "base":
+            blocks = []
+            for example in exemplars:
+                blocks.append(f"User: {example['question']} {boxed_suffix}\n\nAssistant: {example['boxed_answer']}")
+            blocks.append(f"User: {question} {boxed_suffix}\n\nAssistant:")
+            return "\n\n".join(blocks)
+        return f"User: {question} {boxed_suffix}\n\nAssistant:"
+
+    raise ValueError(f"Unknown prompt style: {prompt_style}")
+
+
+def resolve_answer_format(prompt_style: str, answer_format: str) -> str:
+    if answer_format != "auto":
+        return answer_format
+    if prompt_style == "rlx":
+        return "flexible_numeric"
+    return "boxed"
+
+
+def score_completion(completion: str, ground_truth: str, answer_format: str) -> tuple[bool, str | None]:
+    if answer_format == "gsm8k_hash":
+        answer = extract_gsm8k_solution(completion, method="strict")
+    elif answer_format == "flexible_numeric":
+        answer = extract_gsm8k_solution(completion, method="flexible")
+    elif answer_format == "boxed":
+        answer = extract_boxed_solution(completion)
+    else:
+        raise ValueError(f"Unknown answer format: {answer_format}")
+    return normalize_answer(answer) == normalize_answer(ground_truth) if answer is not None else False, answer
+
+
+def normalize_answer(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    value = value.replace(",", "").replace("$", "")
+    value = re.sub(r"\\text\{([^{}]*)\}", r"\1", value)
+    if re.fullmatch(r"-?\d+\.0+", value):
+        value = value.split(".", 1)[0]
+    return value
+
+
+def extract_boxed_solution(solution_str: str) -> str | None:
+    if len(solution_str) > SOLUTION_CLIP_CHARS:
+        solution_str = solution_str[-SOLUTION_CLIP_CHARS:]
+    idx = solution_str.rfind(r"\boxed{")
+    if idx < 0:
+        return None
+    i = idx + len(r"\boxed{")
+    depth = 1
+    chars = []
+    while i < len(solution_str):
+        char = solution_str[i]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return "".join(chars).strip()
+        chars.append(char)
+        i += 1
+    return None
 
 
 def gsm8k_score(completion: str, ground_truth: str) -> float:
-    answer = extract_gsm8k_solution(completion, method="flexible")
-    return float(answer == ground_truth) if answer is not None else 0.0
+    correct, _ = score_completion(completion, ground_truth, "flexible_numeric")
+    return float(correct)
 
 
 def extract_gsm8k_solution(solution_str: str, method: str = "flexible") -> str | None:
     if len(solution_str) > SOLUTION_CLIP_CHARS:
         solution_str = solution_str[-SOLUTION_CLIP_CHARS:]
     if method == "strict":
-        solutions = re.findall(r"#### (\-?[0-9\.\,]+)", solution_str)
+        solutions = re.findall(r"####\s*(\-?[$0-9\.\,]+)", solution_str)
         if not solutions:
             return None
         return solutions[-1].replace(",", "").replace("$", "")
@@ -194,7 +303,6 @@ def task_registry(args: argparse.Namespace) -> dict[str, TaskSpec]:
             train_path=args.gsm8k_train_path,
             eval_path=args.gsm8k_eval_path,
             prompt_builder=gsm8k_prompt,
-            scorer=gsm8k_score,
         )
     }
 
@@ -304,6 +412,54 @@ def generate_for_prompts(
     return grouped
 
 
+def load_vllm(args: argparse.Namespace, checkpoint_path: Path):
+    os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    try:
+        from vllm import LLM
+    except ImportError as exc:
+        raise SystemExit(f"vLLM backend requested, but importing vllm.LLM failed: {exc}") from exc
+
+    kwargs = {
+        "model": str(checkpoint_path),
+        "tokenizer": str(checkpoint_path),
+        "tensor_parallel_size": args.tensor_parallel_size,
+        "trust_remote_code": args.trust_remote_code,
+        "dtype": args.torch_dtype,
+        "gpu_memory_utilization": args.gpu_memory_utilization,
+        "seed": args.seed,
+        "enforce_eager": args.enforce_eager,
+    }
+    if args.max_model_len is not None:
+        kwargs["max_model_len"] = args.max_model_len
+    if args.revision is not None:
+        kwargs["revision"] = args.revision
+    return LLM(**kwargs)
+
+
+def generate_for_prompts_vllm(
+    llm: Any,
+    prompts: list[str],
+    args: argparse.Namespace,
+    stop_sequences: list[str],
+) -> list[list[str]]:
+    from vllm import SamplingParams
+
+    sampling_params = SamplingParams(
+        n=args.num_samples,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k if args.top_k is not None else 0,
+        max_tokens=args.max_new_tokens,
+        stop=stop_sequences or None,
+        seed=args.seed,
+    )
+    outputs = llm.generate(prompts, sampling_params)
+    grouped = []
+    for request_output in outputs:
+        grouped.append([completion.text for completion in request_output.outputs])
+    return grouped
+
+
 def evaluate_checkpoint_task(
     args: argparse.Namespace,
     checkpoint: CheckpointSpec,
@@ -315,24 +471,33 @@ def evaluate_checkpoint_task(
     fewshot = args.num_fewshot
     if fewshot is None:
         fewshot = 8 if args.prompt_mode == "base" else 0
+    answer_format = resolve_answer_format(args.prompt_style, args.answer_format)
     exemplars = load_gsm8k_exemplars(task.train_path, fewshot)
     rows = load_eval_rows(task.eval_path, args.max_examples)
 
-    model, tokenizer = load_model_and_tokenizer(args, checkpoint.path)
+    if args.backend == "hf":
+        model, tokenizer = load_model_and_tokenizer(args, checkpoint.path)
+        llm = None
+    else:
+        model = tokenizer = None
+        llm = load_vllm(args, checkpoint.path)
     predictions_path = run_dir / f"{checkpoint.name}__{task.name}.jsonl"
     totals = {k: 0.0 for k in pass_ks}
 
     with predictions_path.open("w", encoding="utf-8") as pred_f:
         for start in range(0, len(rows), args.batch_size):
             batch = rows[start : start + args.batch_size]
-            prompts = [task.prompt_builder(row["question"], exemplars, args.prompt_mode) for row in batch]
-            completions_by_prompt = generate_for_prompts(model, tokenizer, prompts, args)
+            prompts = [task.prompt_builder(row["question"], exemplars, args.prompt_mode, args.prompt_style) for row in batch]
+            if args.backend == "hf":
+                completions_by_prompt = generate_for_prompts(model, tokenizer, prompts, args)
+            else:
+                completions_by_prompt = generate_for_prompts_vllm(llm, prompts, args, stop_sequences)
             for row, prompt, completions in zip(batch, prompts, completions_by_prompt, strict=True):
                 sample_records = []
                 correct_count = 0
                 for sample_idx, raw_completion in enumerate(completions):
                     stopped_completion, stop_reason = apply_stop_sequences(raw_completion, stop_sequences)
-                    correct = bool(task.scorer(stopped_completion, row["ground_truth"]))
+                    correct, extracted_answer = score_completion(stopped_completion, row["ground_truth"], answer_format)
                     correct_count += int(correct)
                     sample_records.append(
                         {
@@ -340,7 +505,7 @@ def evaluate_checkpoint_task(
                             "raw_completion": raw_completion,
                             "completion": stopped_completion,
                             "stop_reason": stop_reason,
-                            "extracted_answer": extract_gsm8k_solution(stopped_completion, method="flexible"),
+                            "extracted_answer": extracted_answer,
                             "correct": correct,
                         }
                     )
@@ -357,6 +522,8 @@ def evaluate_checkpoint_task(
                             "checkpoint": checkpoint.name,
                             "checkpoint_path": str(checkpoint.path),
                             "prompt_mode": args.prompt_mode,
+                            "prompt_style": args.prompt_style,
+                            "answer_format": answer_format,
                             "index": row["index"],
                             "question": row["question"],
                             "ground_truth": row["ground_truth"],
@@ -373,6 +540,7 @@ def evaluate_checkpoint_task(
             print(f"[{checkpoint.name}/{task.name}] evaluated {done}/{len(rows)}", flush=True)
 
     del model
+    del llm
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -382,12 +550,16 @@ def evaluate_checkpoint_task(
         "checkpoint_path": str(checkpoint.path),
         "task": task.name,
         "prompt_mode": args.prompt_mode,
+        "prompt_style": args.prompt_style,
+        "answer_format": answer_format,
         "num_examples": len(rows),
         "num_samples": args.num_samples,
         "num_fewshot": fewshot,
         "temperature": args.temperature,
         "top_p": args.top_p,
         "max_new_tokens": args.max_new_tokens,
+        "backend": args.backend,
+        "tensor_parallel_size": args.tensor_parallel_size if args.backend == "vllm" else None,
         "metrics": metrics,
         "predictions_path": str(predictions_path),
     }
@@ -396,7 +568,7 @@ def evaluate_checkpoint_task(
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
+    if args.backend == "hf" and torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
     tasks = normalize_tasks(args.tasks)
@@ -418,6 +590,7 @@ def main() -> None:
     config = vars(args).copy()
     config["output_dir"] = str(args.output_dir)
     config["stop_sequences"] = stop_sequences
+    config["resolved_answer_format"] = resolve_answer_format(args.prompt_style, args.answer_format)
     config["tasks"] = tasks
     (run_dir / "run_config.json").write_text(json.dumps(config, indent=2, default=str), encoding="utf-8")
 
@@ -444,12 +617,16 @@ def main() -> None:
             "checkpoint_path",
             "task",
             "prompt_mode",
+            "prompt_style",
+            "answer_format",
             "num_examples",
             "num_samples",
             "num_fewshot",
             "temperature",
             "top_p",
             "max_new_tokens",
+            "backend",
+            "tensor_parallel_size",
             *[f"pass@{k}" for k in pass_ks],
             "predictions_path",
         ]

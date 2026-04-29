@@ -53,6 +53,8 @@ class SelfDistillationConfig(BaseConfig):
         dont_reprompt_on_self_success (bool): Whether to not reprompt on self-success.
         remove_thinking_from_demonstration (bool): Whether to remove <think>...</think> tags from successful demonstrations before reprompting.
         is_clip (Optional[float]): Clip value for distillation IS ratio; None disables IS weighting.
+        pointwise_kl_clip (Optional[float]): Maximum per-vocabulary-entry KL/JSD contribution for
+            full-logit distillation; None disables OPSD-style pointwise clipping.
         reprompt_template (str): Template for reprompting. Uses {prompt}, {solution}, {feedback} placeholders.
         solution_template (str): Template for formatting solution section. Uses {successful_previous_attempt} placeholder.
         feedback_template (str): Template for formatting feedback section. Uses {feedback_raw} placeholder.
@@ -79,6 +81,7 @@ class SelfDistillationConfig(BaseConfig):
     dont_reprompt_on_self_success: bool = False
     remove_thinking_from_demonstration: bool = False
     is_clip: Optional[float] = None
+    pointwise_kl_clip: Optional[float] = None
     reprompt_template: str = (
         "{prompt}{solution}{feedback}\n\n"
         "Correctly solve the original question.\n"
@@ -119,6 +122,10 @@ class SelfDistillationConfig(BaseConfig):
             )
         if self.is_clip is not None and self.is_clip <= 0:
             raise ValueError(f"self_distillation.is_clip must be positive, got {self.is_clip}")
+        if self.pointwise_kl_clip is not None and self.pointwise_kl_clip <= 0:
+            raise ValueError(
+                f"self_distillation.pointwise_kl_clip must be positive, got {self.pointwise_kl_clip}"
+            )
         valid_rollout_sources = ["student", "teacher"]
         if self.rollout_source not in valid_rollout_sources:
             raise ValueError(

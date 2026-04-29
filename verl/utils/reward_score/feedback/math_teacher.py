@@ -11,12 +11,18 @@ TEACHER_PROMPT_TEMPLATE = """Problem: {problem_text}
 Here is a reference solution: {solution_text}
 
 After understanding the reference solution, solve the problem again using your own approach.
-Keep the reasoning brief and focused on the essential steps.
-Your final line must be exactly:
+Please reason step by step.
 {final_answer_instruction}
-Do not write anything after that final line.
+Do not output placeholder text such as <answer>.
+Do not write anything after the final answer line.
 
 Answer:"""
+
+
+BOXED_FINAL_ANSWER_INSTRUCTION = r"Put your final answer within \boxed{}."
+
+
+GSM8K_FINAL_ANSWER_INSTRUCTION = "Put your final answer after #### on the final line."
 
 
 def answer_format_for_data_source(data_source: str | None) -> str:
@@ -28,9 +34,9 @@ def answer_format_for_data_source(data_source: str | None) -> str:
 
 def final_answer_instruction(answer_format: str) -> str:
     if answer_format == "gsm8k_hash":
-        return "#### <answer>"
+        return GSM8K_FINAL_ANSWER_INSTRUCTION
     if answer_format == "boxed":
-        return r"\boxed{<answer>}"
+        return BOXED_FINAL_ANSWER_INSTRUCTION
     raise ValueError(f"Unsupported math teacher answer format: {answer_format}")
 
 

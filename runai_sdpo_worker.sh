@@ -14,6 +14,7 @@ PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
 LR=${LR:-"1e-5"}
 ALPHA=${ALPHA:-"0.5"}
 DISTILLATION_TOPK=${DISTILLATION_TOPK:-100}
+POINTWISE_KL_CLIP=${POINTWISE_KL_CLIP:-""}
 TEACHER_UPDATE_RATE=${TEACHER_UPDATE_RATE:-"0.05"}
 DONT_REPROMPT_ON_SELF_SUCCESS=${DONT_REPROMPT_ON_SELF_SUCCESS:-"True"}
 ROLLOUT_SOURCE=${ROLLOUT_SOURCE:-"student"}
@@ -36,6 +37,11 @@ TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-""}
 VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-"False"}
 TEST_FREQ=${TEST_FREQ:-"-1"}
 SAVE_FREQ=${SAVE_FREQ:-"50"}
+MAX_ACTOR_CKPT_TO_KEEP=${MAX_ACTOR_CKPT_TO_KEEP:-"null"}
+MAX_CRITIC_CKPT_TO_KEEP=${MAX_CRITIC_CKPT_TO_KEEP:-"null"}
+MAX_LATEST_CKPT_TO_KEEP=${MAX_LATEST_CKPT_TO_KEEP:-"null"}
+BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-""}
+BEST_CHECKPOINT_MODE=${BEST_CHECKPOINT_MODE:-"max"}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-"0"}
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-""}
 VALIDATION_GENERATIONS_ONLY=${VALIDATION_GENERATIONS_ONLY:-"False"}
@@ -174,7 +180,9 @@ trainer.total_epochs=$TOTAL_EPOCHS \
 trainer.val_before_train=$VAL_BEFORE_TRAIN \
 trainer.test_freq=$TEST_FREQ \
 trainer.save_freq=$SAVE_FREQ \
-trainer.max_actor_ckpt_to_keep=2 \
+trainer.max_actor_ckpt_to_keep=$MAX_ACTOR_CKPT_TO_KEEP \
+trainer.max_critic_ckpt_to_keep=$MAX_CRITIC_CKPT_TO_KEEP \
+trainer.max_latest_ckpt_to_keep=$MAX_LATEST_CKPT_TO_KEEP \
 trainer.resume_mode=$RESUME_MODE \
 actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE \
 actor_rollout_ref.actor.optim.lr=$LR \
@@ -193,6 +201,10 @@ actor_rollout_ref.rollout.val_kwargs.temperature=$VAL_TEMPERATURE \
 vars.dir=$REPO_DIR \
 vars.log_dir=$LOG_DIR \
 vars.ckpt_dir=$CKPT_DIR"
+
+if [[ -n "$POINTWISE_KL_CLIP" ]]; then
+    ARGS="$ARGS actor_rollout_ref.actor.self_distillation.pointwise_kl_clip=$POINTWISE_KL_CLIP"
+fi
 
 if [[ -n "$TOKENIZER_PATH" ]]; then
     ARGS="$ARGS actor_rollout_ref.model.tokenizer_path=$TOKENIZER_PATH critic.model.tokenizer_path=$TOKENIZER_PATH"
@@ -239,6 +251,10 @@ if [[ -n "$RESUME_FROM_PATH" ]]; then
     ARGS="$ARGS trainer.resume_from_path=$RESUME_FROM_PATH"
 fi
 
+if [[ -n "$BEST_CHECKPOINT_METRIC" ]]; then
+    ARGS="$ARGS trainer.best_checkpoint_metric=$BEST_CHECKPOINT_METRIC trainer.best_checkpoint_mode=$BEST_CHECKPOINT_MODE"
+fi
+
 if [[ -n "$MAX_MODEL_LEN" ]]; then
     ARGS="$ARGS max_model_len=$MAX_MODEL_LEN actor_rollout_ref.rollout.max_model_len=$MAX_MODEL_LEN"
 fi
@@ -258,6 +274,7 @@ echo "Repo: $REPO_DIR"
 echo "Data: $DATA_PATH"
 echo "Model: $MODEL_PATH"
 echo "Tokenizer path: ${TOKENIZER_PATH:-<default>}"
+echo "Checkpoint retention: latest=$MAX_LATEST_CKPT_TO_KEEP best_metric=${BEST_CHECKPOINT_METRIC:-<disabled>} best_mode=$BEST_CHECKPOINT_MODE actor_limit=$MAX_ACTOR_CKPT_TO_KEEP"
 echo "Validation sampling: n=$VAL_GENERATION_N do_sample=$VAL_DO_SAMPLE temperature=$VAL_TEMPERATURE top_p=${VAL_TOP_P:-<config>} top_k=${VAL_TOP_K:-<config>}"
 echo "Conda env requested: $CONDA_ENV"
 echo "----------------------------------------------------------------"

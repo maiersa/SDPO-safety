@@ -204,6 +204,17 @@ trainer:
   # Maximum number of critic checkpoints to keep
   max_critic_ckpt_to_keep: null
 
+  # Maximum number of latest global_step_* checkpoint folders to keep.
+  # This is applied at the trainer level and can preserve the best checkpoint too.
+  max_latest_ckpt_to_keep: null
+
+  # Validation metric used to preserve a best checkpoint. Set to "auto_acc_mean"
+  # to average validation mean accuracy metrics, or set an exact metric key.
+  best_checkpoint_metric: null
+
+  # Whether higher or lower best_checkpoint_metric values are better.
+  best_checkpoint_mode: max
+
   # Timeout (in seconds) for Ray worker to wait for registration
   ray_wait_register_center_timeout: 300
 

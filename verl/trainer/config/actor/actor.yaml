@@ -127,6 +127,9 @@ self_distillation:
   # IS clip for loss; null disables IS weighting
   is_clip: 2
 
+  # OPSD-style pointwise KL/JSD clip for full-logit distillation; null disables it
+  pointwise_kl_clip: null
+
   # Reprompting template - available variables: prompt, successful_previous_attempt, feedback
   reprompt_template: |-
     {prompt}{solution}{feedback}

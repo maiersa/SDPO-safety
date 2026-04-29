@@ -1159,6 +1159,21 @@ def compute_self_distillation_loss(
             kl_student = F.kl_div(mixture_log_probs, student_distill_log_probs, reduction="none", log_target=True)
             kl_loss = torch.lerp(kl_student, kl_teacher, alpha)  # Compute the Generalized Jensen-Shannon Divergence
 
+        pointwise_kl_clip = getattr(self_distillation_config, "pointwise_kl_clip", None)
+        if hasattr(self_distillation_config, "get"):
+            pointwise_kl_clip = self_distillation_config.get("pointwise_kl_clip", pointwise_kl_clip)
+        if pointwise_kl_clip is not None:
+            pointwise_kl_clip = float(pointwise_kl_clip)
+            with torch.no_grad():
+                max_pointwise_kl = kl_loss.detach().amax(dim=-1)
+                metrics["self_distillation/pointwise_kl_clipped_token_frac"] = verl_F.masked_mean(
+                    (max_pointwise_kl > pointwise_kl_clip).float(), loss_mask
+                )
+                metrics["self_distillation/preclip_kl_token_mean"] = verl_F.masked_mean(
+                    kl_loss.sum(-1), loss_mask
+                )
+            kl_loss = kl_loss.clamp(max=pointwise_kl_clip)
+
         per_token_loss = kl_loss.sum(-1)
     else:
         assert self_distillation_config.alpha == 1.0, "Only reverse KL is supported for non-full-logit distillation"

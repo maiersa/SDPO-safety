@@ -21,6 +21,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from collections import defaultdict
@@ -1692,6 +1693,142 @@ class RayPPOTrainer:
             if self.use_rm and not self.use_reward_loop:
                 self.rm_wg.stop_profile()
 
+    def _best_checkpoint_metadata_path(self):
+        return os.path.join(self.config.trainer.default_local_dir, "best_checkpoint_metric.json")
+
+    def _best_checkpoint_step_path(self):
+        return os.path.join(self.config.trainer.default_local_dir, "best_checkpointed_iteration.txt")
+
+    def _load_best_checkpoint_metadata(self):
+        metadata_path = self._best_checkpoint_metadata_path()
+        if not os.path.exists(metadata_path):
+            return None
+        try:
+            with open(metadata_path) as f:
+                return json.load(f)
+        except Exception as exc:
+            print(f"Warning: failed to read best checkpoint metadata at {metadata_path}: {exc}")
+            return None
+
+    def _checkpoint_step_path(self, step):
+        return os.path.join(self.config.trainer.default_local_dir, f"global_step_{int(step)}")
+
+    def _is_better_checkpoint_metric(self, metric_value, previous_value):
+        if previous_value is None:
+            return True
+        mode = self.config.trainer.get("best_checkpoint_mode", "max")
+        if mode == "max":
+            return metric_value > previous_value
+        if mode == "min":
+            return metric_value < previous_value
+        raise ValueError(f"Invalid trainer.best_checkpoint_mode: {mode}. Expected 'max' or 'min'.")
+
+    def _select_best_checkpoint_metric(self, metrics: dict):
+        metric_spec = self.config.trainer.get("best_checkpoint_metric", None)
+        if not metric_spec:
+            return None, None
+
+        if metric_spec in metrics:
+            return metric_spec, float(metrics[metric_spec])
+
+        if metric_spec == "auto_acc_mean":
+            candidates = {
+                key: float(value)
+                for key, value in metrics.items()
+                if key.startswith("val-core/") and "/acc/" in key and "/mean" in key
+            }
+            if not candidates:
+                print("Warning: best_checkpoint_metric=auto_acc_mean found no val-core/*/acc/mean* metrics.")
+                return None, None
+            metric_value = float(np.mean(list(candidates.values())))
+            return "auto_acc_mean:" + ",".join(sorted(candidates)), metric_value
+
+        candidates = {key: float(value) for key, value in metrics.items() if metric_spec in key}
+        if len(candidates) == 1:
+            key, value = next(iter(candidates.items()))
+            return key, value
+        if len(candidates) > 1:
+            print(
+                "Warning: trainer.best_checkpoint_metric matched multiple metrics; "
+                f"use an exact key instead. Matches: {sorted(candidates)}"
+            )
+        else:
+            print(f"Warning: trainer.best_checkpoint_metric did not match any metric: {metric_spec}")
+        return None, None
+
+    def _maybe_mark_best_checkpoint(self, metrics: dict):
+        metric_key, metric_value = self._select_best_checkpoint_metric(metrics)
+        if metric_key is None:
+            return
+
+        previous = self._load_best_checkpoint_metadata()
+        previous_value = None if previous is None else previous.get("metric_value")
+        if previous is not None and not os.path.isdir(self._checkpoint_step_path(previous["step"])):
+            previous_value = None
+        if not self._is_better_checkpoint_metric(metric_value, previous_value):
+            return
+
+        self._pending_best_checkpoint = {
+            "step": int(self.global_steps),
+            "metric_key": metric_key,
+            "metric_value": metric_value,
+            "mode": self.config.trainer.get("best_checkpoint_mode", "max"),
+        }
+        print(
+            "New best checkpoint candidate: "
+            f"step={self.global_steps}, metric={metric_key}, value={metric_value}"
+        )
+
+    def _commit_pending_best_checkpoint(self):
+        pending = getattr(self, "_pending_best_checkpoint", None)
+        if not pending or pending.get("step") != int(self.global_steps):
+            return
+
+        os.makedirs(self.config.trainer.default_local_dir, exist_ok=True)
+        with open(self._best_checkpoint_metadata_path(), "w") as f:
+            json.dump(pending, f, indent=2, sort_keys=True)
+        with open(self._best_checkpoint_step_path(), "w") as f:
+            f.write(str(pending["step"]))
+        print(
+            "Saved best checkpoint marker: "
+            f"step={pending['step']}, value={pending['metric_value']}"
+        )
+
+    def _checkpoint_steps_on_disk(self):
+        root = self.config.trainer.default_local_dir
+        if not os.path.isdir(root):
+            return []
+
+        steps = []
+        for name in os.listdir(root):
+            match = re.fullmatch(r"global_step_(\d+)", name)
+            if match and os.path.isdir(os.path.join(root, name)):
+                steps.append(int(match.group(1)))
+        return sorted(steps)
+
+    def _cleanup_global_step_checkpoints(self):
+        max_latest = self.config.trainer.get("max_latest_ckpt_to_keep", None)
+        if max_latest is None:
+            return
+        max_latest = int(max_latest)
+        if max_latest <= 0:
+            return
+
+        steps = self._checkpoint_steps_on_disk()
+        keep_steps = set(steps[-max_latest:])
+
+        best_metadata = self._load_best_checkpoint_metadata()
+        if best_metadata is not None and os.path.isdir(self._checkpoint_step_path(best_metadata["step"])):
+            keep_steps.add(int(best_metadata["step"]))
+
+        root = self.config.trainer.default_local_dir
+        for step in steps:
+            if step in keep_steps:
+                continue
+            path = os.path.join(root, f"global_step_{step}")
+            print(f"Removing old global checkpoint folder: {path}")
+            shutil.rmtree(path, ignore_errors=True)
+
     def _get_dp_size(self, worker_group, role: str) -> int:
         """Get data parallel size from worker group dispatch info.
 
@@ -2247,6 +2384,7 @@ class RayPPOTrainer:
                         val_metrics: dict = self._validate()
                         if is_last_step:
                             last_val_metrics = val_metrics
+                        self._maybe_mark_best_checkpoint(val_metrics)
                     metrics.update(val_metrics)
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
@@ -2268,6 +2406,8 @@ class RayPPOTrainer:
                         print("Force saving checkpoint: ESI instance expiration approaching.")
                     with marked_timer("save_checkpoint", timing_raw, color="green"):
                         self._save_checkpoint()
+                        self._commit_pending_best_checkpoint()
+                        self._cleanup_global_step_checkpoints()
 
                 with marked_timer("stop_profile", timing_raw):
                     next_step_profile = (

@@ -252,6 +252,106 @@ CONTINUE_ON_ERROR=false \
 bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
 
 
+# Fixed the prompt of the experiment above
+# reduced the EMA and testing smaller lr
+rs opsd-om-${USER}-s2-promptfix-lr-ema0 --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/openmathinstruct \
+CONFIG_NAME=sdpo_math_teacher \
+ROLLOUT_SOURCE=student \
+EXP_PREFIX=OPSD-OPENMATH-STAGE2-PROMPTFIX-EMA0-FULLVOCAB \
+SUFFIX_PREFIX=opsd_openmath_stage2_promptfix_ema0_fullvocab \
+STAGE2_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2 \
+CHECKPOINTS=stage2-step32000,stage2-step47684 \
+LRS=1e-6,5e-6 \
+ALPHAS=0.5,0.0 \
+DISTILLATION_TOPKS=null \
+TEACHER_UPDATE_RATE=0.0 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=4096 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+TEST_FREQ=10 \
+SAVE_FREQ=10 \
+MAX_LATEST_CKPT_TO_KEEP=1 \
+BEST_CHECKPOINT_METRIC=auto_acc_mean \
+BEST_CHECKPOINT_MODE=max \
+VAL_BEFORE_TRAIN=True \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VAL_DO_SAMPLE=True \
+VAL_TEMPERATURE=0.6 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+# Add a Pointwise clipping at the token level 
+# Comparison to the run abobe
+# Promptfix + frozen teacher + full-vocab OPSD + pointwise KL clipping
+rs opsd-om-${USER}-s2-promptfix-lr-ema0-pwkl005 --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+DATA_PATH=datasets/openmathinstruct \
+CONFIG_NAME=sdpo_math_teacher \
+ROLLOUT_SOURCE=student \
+EXP_PREFIX=OPSD-OPENMATH-STAGE2-PROMPTFIX-EMA0-FULLVOCAB-PWKL005 \
+SUFFIX_PREFIX=opsd_openmath_stage2_promptfix_ema0_fullvocab_pwkl005 \
+STAGE2_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2 \
+CHECKPOINTS=stage2-step32000,stage2-step47684 \
+LRS=1e-6,5e-6 \
+ALPHAS=0.5,0.0 \
+DISTILLATION_TOPKS=null \
+POINTWISE_KL_CLIP=0.05 \
+TEACHER_UPDATE_RATE=0.0 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+PPO_MINI_BATCH_SIZE=64 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=4096 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+TEST_FREQ=10 \
+SAVE_FREQ=10 \
+MAX_LATEST_CKPT_TO_KEEP=1 \
+BEST_CHECKPOINT_METRIC=auto_acc_mean \
+BEST_CHECKPOINT_MODE=max \
+VAL_BEFORE_TRAIN=True \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VAL_DO_SAMPLE=True \
+VAL_TEMPERATURE=0.6 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_sequential_sweep.sh
+
+
+
 # Smoke test for the OpenMathInstruct stage-3 RL-Excursions-style training setup.
 # This keeps the same core choices as the full run:
 # - train/val from datasets/openmathinstruct
@@ -702,6 +802,56 @@ SKIP_COMPLETED=true \
 RESUME_MODE=auto \
 CONTINUE_ON_ERROR=false \
 bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_grpo_sequential_sweep.sh
+
+# Stage-2 OpenMathInstruct GRPO comparison run:
+# - same stage-2 checkpoints as OPSD
+# - same OpenMathInstruct data/config envelope
+# - no OPSD distillation/teacher terms
+# - direct baseline against OPSD alpha=0.5 and forward-KL alpha=0.0 runs
+rs grpo-om-${USER}-s2-fv-comp --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+WANDB_ENTITY=samaier-epfl \
+PROJECT_NAME=GRPO-MathTeacher-${USER} \
+DATA_PATH=datasets/openmathinstruct \
+EXP_PREFIX=GRPO-OPENMATH-STAGE2-FORMATFIX-COMP \
+SUFFIX_PREFIX=grpo_openmath_stage2_formatfix_comp \
+STAGE2_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2 \
+CHECKPOINTS=stage2-step16000,stage2-step32000,stage2-step47684 \
+LRS=1e-5 \
+MINI_BATCH_SIZES=64 \
+SEEDS=0 \
+TRAIN_BATCH_SIZE=64 \
+ROLLOUT_BATCH_SIZE=8 \
+TRAIN_MAX_SAMPLES=-1 \
+VAL_MAX_SAMPLES=4096 \
+TOTAL_EPOCHS=1 \
+TOTAL_TRAINING_STEPS=100 \
+VAL_ONLY=False \
+VAL_BEFORE_TRAIN=True \
+TEST_FREQ=10 \
+SAVE_FREQ=10 \
+TRAINER_GPUS_PER_NODE=8 \
+LOG_VAL_GENERATIONS=8 \
+VAL_GENERATION_N=8 \
+VAL_DO_SAMPLE=True \
+VAL_TEMPERATURE=0.6 \
+VALIDATION_GENERATIONS_ONLY=False \
+MAX_MODEL_LEN=4096 \
+DATA_MAX_PROMPT_LENGTH=1024 \
+DATA_MAX_RESPONSE_LENGTH=1024 \
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=8192 \
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.6 \
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=1 \
+ACTOR_PPO_MICRO_BATCH_SIZE=1 \
+SKIP_COMPLETED=true \
+RESUME_MODE=auto \
+CONTINUE_ON_ERROR=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_grpo_sequential_sweep.sh
+
 
 
 rs grpo-gsm8k-${USER}-later7b --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
