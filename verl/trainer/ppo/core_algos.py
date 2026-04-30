@@ -1168,10 +1168,10 @@ def compute_self_distillation_loss(
                 max_pointwise_kl = kl_loss.detach().amax(dim=-1)
                 metrics["self_distillation/pointwise_kl_clipped_token_frac"] = verl_F.masked_mean(
                     (max_pointwise_kl > pointwise_kl_clip).float(), loss_mask
-                )
+                ).detach().item()
                 metrics["self_distillation/preclip_kl_token_mean"] = verl_F.masked_mean(
                     kl_loss.sum(-1), loss_mask
-                )
+                ).detach().item()
             kl_loss = kl_loss.clamp(max=pointwise_kl_clip)
 
         per_token_loss = kl_loss.sum(-1)
