@@ -18,7 +18,7 @@ NUM_SAMPLES=${NUM_SAMPLES:-32}
 PASS_AT_K=${PASS_AT_K:-1,8,32}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-512}
 MAX_PROMPT_TOKENS=${MAX_PROMPT_TOKENS:-}
-BATCH_SIZE=${BATCH_SIZE:-1}
+BATCH_SIZE=${BATCH_SIZE:-64}
 MAX_EXAMPLES=${MAX_EXAMPLES:-}
 NUM_FEWSHOT_BASE=${NUM_FEWSHOT_BASE:-8}
 NUM_FEWSHOT_TRAINED=${NUM_FEWSHOT_TRAINED:-0}
@@ -36,8 +36,18 @@ ADD_DEFAULT_STOPS=${ADD_DEFAULT_STOPS:-true}
 
 GSM8K_TRAIN_PATH=${GSM8K_TRAIN_PATH:-datasets/gsm8k/train.parquet}
 GSM8K_EVAL_PATH=${GSM8K_EVAL_PATH:-datasets/gsm8k/test.parquet}
+MATH_TRAIN_PATH=${MATH_TRAIN_PATH:-datasets/math/train.parquet}
+MATH_EVAL_PATH=${MATH_EVAL_PATH:-datasets/math/test.parquet}
 OUTPUT_ROOT=${OUTPUT_ROOT:-outputs/pretrain_benchmarks/rlx_comparison}
 COMBINE_SUMMARIES=${COMBINE_SUMMARIES:-true}
+SKIP_COMPLETED_BENCHMARKS=${SKIP_COMPLETED_BENCHMARKS:-true}
+LOG_TO_FILE=${LOG_TO_FILE:-true}
+BENCHMARK_LOG_DIR=${BENCHMARK_LOG_DIR:-${OUTPUT_ROOT}/logs}
+AUTO_MERGE_FSDP=${AUTO_MERGE_FSDP:-true}
+MERGER_BACKEND=${MERGER_BACKEND:-fsdp}
+CHECKPOINT_SELECTION=${CHECKPOINT_SELECTION:-latest}
+OPSD_CHECKPOINT_SELECTION=${OPSD_CHECKPOINT_SELECTION:-best}
+GRPO_CHECKPOINT_SELECTION=${GRPO_CHECKPOINT_SELECTION:-latest}
 
 STAGE1_ROOT=${STAGE1_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage1}
 STAGE2_ROOT=${STAGE2_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2}
@@ -109,12 +119,145 @@ checkpoint_name() {
     fi
 }
 
+completed_summary_csv() {
+    local output_dir="$1"
+    if [[ ! -d "$output_dir" ]]; then
+        return 0
+    fi
+    "$PYTHON_BIN" - "$output_dir" "$TASKS" "$PROMPT_STYLE" "$NUM_SAMPLES" "$PASS_AT_K" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+output_dir = Path(sys.argv[1])
+tasks = {part.strip().lower() for raw in sys.argv[2].split(",") for part in raw.split() if part.strip()}
+prompt_style = sys.argv[3]
+num_samples = sys.argv[4]
+pass_at_k = [f"pass@{part.strip()}" for part in sys.argv[5].split(",") if part.strip()]
+
+for path in sorted(output_dir.glob("*/summary.csv"), reverse=True):
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        continue
+    row_tasks = {row.get("task", "").lower() for row in rows}
+    has_tasks = tasks.issubset(row_tasks)
+    has_prompt_style = all(row.get("prompt_style") == prompt_style for row in rows if row.get("task", "").lower() in tasks)
+    has_num_samples = all(row.get("num_samples") == num_samples for row in rows if row.get("task", "").lower() in tasks)
+    has_metrics = all(metric in rows[0] and rows[0].get(metric, "") != "" for metric in pass_at_k)
+    if has_tasks and has_prompt_style and has_num_samples and has_metrics:
+        print(path)
+        break
+PY
+}
+
+resolve_checkpoint_selection() {
+    local spec="$1"
+    local name path selection step_file step selected_dir
+
+    name="${spec%%=*}"
+    path="${spec#*=}"
+    selection="$CHECKPOINT_SELECTION"
+    if [[ "$name" == opsd* || "$(basename "$path")" == OPSD-* ]]; then
+        selection="$OPSD_CHECKPOINT_SELECTION"
+    elif [[ "$name" == grpo* || "$(basename "$path")" == GRPO-* ]]; then
+        selection="$GRPO_CHECKPOINT_SELECTION"
+    fi
+
+    # If the caller already points at a concrete checkpoint or HF model dir,
+    # leave it untouched. Selection only applies to run roots containing
+    # best/latest tracker files and global_step_* children.
+    if [[ "$(basename "$path")" == global_step_* ]] || [[ -d "${path}/actor" ]] || [[ -f "${path}/config.json" ]]; then
+        printf '%s=%s' "$name" "$path"
+        return 0
+    fi
+
+    if [[ ! -d "$path" ]] || ! compgen -G "${path}/global_step_*" >/dev/null; then
+        printf '%s=%s' "$name" "$path"
+        return 0
+    fi
+
+    case "$selection" in
+        best)
+            step_file="${path}/best_checkpointed_iteration.txt"
+            ;;
+        latest|last)
+            step_file="${path}/latest_checkpointed_iteration.txt"
+            ;;
+        none|explicit)
+            printf '%s=%s' "$name" "$path"
+            return 0
+            ;;
+        *)
+            echo "Unknown checkpoint selection=${selection}; expected best, latest, last, none, or explicit." >&2
+            return 1
+            ;;
+    esac
+
+    if [[ ! -f "$step_file" ]]; then
+        echo "Missing checkpoint selection tracker: $step_file" >&2
+        return 1
+    fi
+
+    step="$(tr -d '[:space:]' < "$step_file")"
+    selected_dir="${path}/global_step_${step}"
+    if [[ ! -d "$selected_dir" ]]; then
+        echo "Selected checkpoint directory does not exist: $selected_dir" >&2
+        return 1
+    fi
+
+    echo "Selected ${selection} checkpoint for ${name}: global_step_${step}" >&2
+    printf '%s=%s' "$name" "$selected_dir"
+}
+
+ensure_eval_checkpoint() {
+    local spec="$1"
+    local name path target_dir
+
+    name="${spec%%=*}"
+    path="${spec#*=}"
+
+    if [[ -f "${path}/config.json" ]] && compgen -G "${path}/model*.safetensors" >/dev/null; then
+        printf '%s=%s' "$name" "$path"
+        return 0
+    fi
+
+    if [[ -d "${path}/actor" ]]; then
+        path="${path}/actor"
+    fi
+
+    if [[ -d "${path}/hf_merged" ]]; then
+        printf '%s=%s' "$name" "${path}/hf_merged"
+        return 0
+    fi
+
+    if [[ -d "$path" ]] && compgen -G "${path}/model_world_size_*_rank_*.pt" >/dev/null; then
+        target_dir="${path}/hf_merged"
+        if [[ "$AUTO_MERGE_FSDP" != "true" ]]; then
+            echo "FSDP actor checkpoint needs merging: $path" >&2
+            echo "Set AUTO_MERGE_FSDP=true or merge it manually to ${target_dir}" >&2
+            return 1
+        fi
+        echo "Merging FSDP actor checkpoint for evaluation"
+        echo "Local dir: $path"
+        echo "Target dir: $target_dir"
+        "$PYTHON_BIN" -m verl.model_merger merge \
+            --backend "$MERGER_BACKEND" \
+            --local_dir "$path" \
+            --target_dir "$target_dir"
+        printf '%s=%s' "$name" "$target_dir"
+        return 0
+    fi
+
+    printf '%s=%s' "$name" "$path"
+}
+
 run_group() {
     local group_name="$1"
     local prompt_mode="$2"
     local num_fewshot="$3"
     local raw_checkpoints="$4"
-    local ckpt resolved name output_dir
+    local ckpt resolved name output_dir existing_summary log_path status
 
     raw_checkpoints="$(normalize_list "$raw_checkpoints")"
     if [[ -z "$raw_checkpoints" ]]; then
@@ -124,8 +267,21 @@ run_group() {
 
     for ckpt in $raw_checkpoints; do
         resolved="$(resolve_model_path "$ckpt")"
+        resolved="$(resolve_checkpoint_selection "$resolved")"
+        resolved="$(ensure_eval_checkpoint "$resolved")"
         name="$(checkpoint_name "$resolved")"
         output_dir="${OUTPUT_ROOT}/${group_name}/${name}"
+        existing_summary="$(completed_summary_csv "$output_dir")"
+        if [[ "$SKIP_COMPLETED_BENCHMARKS" == "true" && -n "$existing_summary" ]]; then
+            echo "=============================================================="
+            echo "Skipping completed benchmark"
+            echo "Group: $group_name"
+            echo "Checkpoint: $resolved"
+            echo "Existing summary: $existing_summary"
+            echo "Set SKIP_COMPLETED_BENCHMARKS=false to rerun."
+            echo "=============================================================="
+            continue
+        fi
 
         echo "=============================================================="
         echo "Running pretrain benchmark"
@@ -133,38 +289,86 @@ run_group() {
         echo "Prompt mode: $prompt_mode"
         echo "Checkpoint: $resolved"
         echo "Output dir: $output_dir"
+        echo "Batch size: $BATCH_SIZE"
         echo "=============================================================="
 
-        CHECKPOINTS="$resolved" \
-        PROMPT_MODE="$prompt_mode" \
-        PROMPT_STYLE="$PROMPT_STYLE" \
-        ANSWER_FORMAT="$ANSWER_FORMAT" \
-        NUM_FEWSHOT="$num_fewshot" \
-        TASKS="$TASKS" \
-        TEMPERATURE="$TEMPERATURE" \
-        TOP_P="$TOP_P" \
-        TOP_K="$TOP_K" \
-        NUM_SAMPLES="$NUM_SAMPLES" \
-        PASS_AT_K="$PASS_AT_K" \
-        MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
-        MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" \
-        BATCH_SIZE="$BATCH_SIZE" \
-        MAX_EXAMPLES="$MAX_EXAMPLES" \
-        OUTPUT_DIR="$output_dir" \
-        GSM8K_TRAIN_PATH="$GSM8K_TRAIN_PATH" \
-        GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
-        BACKEND="$BACKEND" \
-        TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
-        GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
-        MAX_MODEL_LEN="$MAX_MODEL_LEN" \
-        ENFORCE_EAGER="$ENFORCE_EAGER" \
-        SEED="$SEED" \
-        DEVICE_MAP="$DEVICE_MAP" \
-        TORCH_DTYPE="$TORCH_DTYPE" \
-        TRUST_REMOTE_CODE="$TRUST_REMOTE_CODE" \
-        ADD_DEFAULT_STOPS="$ADD_DEFAULT_STOPS" \
-        PYTHON_BIN="$PYTHON_BIN" \
-        bash "${REPO_DIR}/experiments/pretrain/run_pretrain_benchmark_eval.sh"
+        if [[ "$LOG_TO_FILE" == "true" ]]; then
+            mkdir -p "$BENCHMARK_LOG_DIR"
+            log_path="${BENCHMARK_LOG_DIR}/${group_name}_${name}_$(date -u +%Y%m%d_%H%M%S).log"
+            echo "Writing benchmark log: $log_path"
+            set +e
+            CHECKPOINTS="$resolved" \
+            PROMPT_MODE="$prompt_mode" \
+            PROMPT_STYLE="$PROMPT_STYLE" \
+            ANSWER_FORMAT="$ANSWER_FORMAT" \
+            NUM_FEWSHOT="$num_fewshot" \
+            TASKS="$TASKS" \
+            TEMPERATURE="$TEMPERATURE" \
+            TOP_P="$TOP_P" \
+            TOP_K="$TOP_K" \
+            NUM_SAMPLES="$NUM_SAMPLES" \
+            PASS_AT_K="$PASS_AT_K" \
+            MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
+            MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" \
+            BATCH_SIZE="$BATCH_SIZE" \
+            MAX_EXAMPLES="$MAX_EXAMPLES" \
+            OUTPUT_DIR="$output_dir" \
+            GSM8K_TRAIN_PATH="$GSM8K_TRAIN_PATH" \
+            GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
+            MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
+            MATH_EVAL_PATH="$MATH_EVAL_PATH" \
+            BACKEND="$BACKEND" \
+            TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
+            GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
+            MAX_MODEL_LEN="$MAX_MODEL_LEN" \
+            ENFORCE_EAGER="$ENFORCE_EAGER" \
+            SEED="$SEED" \
+            DEVICE_MAP="$DEVICE_MAP" \
+            TORCH_DTYPE="$TORCH_DTYPE" \
+            TRUST_REMOTE_CODE="$TRUST_REMOTE_CODE" \
+            ADD_DEFAULT_STOPS="$ADD_DEFAULT_STOPS" \
+            PYTHON_BIN="$PYTHON_BIN" \
+            bash "${REPO_DIR}/experiments/pretrain/run_pretrain_benchmark_eval.sh" 2>&1 | tee -a "$log_path"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [[ "$status" -ne 0 ]]; then
+                echo "Benchmark failed with status $status. Log: $log_path" >&2
+                return "$status"
+            fi
+        else
+            CHECKPOINTS="$resolved" \
+            PROMPT_MODE="$prompt_mode" \
+            PROMPT_STYLE="$PROMPT_STYLE" \
+            ANSWER_FORMAT="$ANSWER_FORMAT" \
+            NUM_FEWSHOT="$num_fewshot" \
+            TASKS="$TASKS" \
+            TEMPERATURE="$TEMPERATURE" \
+            TOP_P="$TOP_P" \
+            TOP_K="$TOP_K" \
+            NUM_SAMPLES="$NUM_SAMPLES" \
+            PASS_AT_K="$PASS_AT_K" \
+            MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
+            MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" \
+            BATCH_SIZE="$BATCH_SIZE" \
+            MAX_EXAMPLES="$MAX_EXAMPLES" \
+            OUTPUT_DIR="$output_dir" \
+            GSM8K_TRAIN_PATH="$GSM8K_TRAIN_PATH" \
+            GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
+            MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
+            MATH_EVAL_PATH="$MATH_EVAL_PATH" \
+            BACKEND="$BACKEND" \
+            TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
+            GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
+            MAX_MODEL_LEN="$MAX_MODEL_LEN" \
+            ENFORCE_EAGER="$ENFORCE_EAGER" \
+            SEED="$SEED" \
+            DEVICE_MAP="$DEVICE_MAP" \
+            TORCH_DTYPE="$TORCH_DTYPE" \
+            TRUST_REMOTE_CODE="$TRUST_REMOTE_CODE" \
+            ADD_DEFAULT_STOPS="$ADD_DEFAULT_STOPS" \
+            PYTHON_BIN="$PYTHON_BIN" \
+            bash "${REPO_DIR}/experiments/pretrain/run_pretrain_benchmark_eval.sh"
+        fi
     done
 }
 

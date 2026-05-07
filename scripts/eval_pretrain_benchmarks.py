@@ -39,6 +39,9 @@ class TaskSpec:
     train_path: Path
     eval_path: Path
     prompt_builder: Callable[[str, list[dict[str, str]], str, str], str]
+    exemplar_loader: Callable[[Path, int], list[dict[str, str]]]
+    row_loader: Callable[[Path, int | None], list[dict[str, Any]]]
+    scorer: Callable[[str, str, str], tuple[bool, str | None]]
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         dest="tasks",
         action="append",
         default=[],
-        help="Benchmark task name. Can be repeated or comma-separated. Currently: gsm8k.",
+        help="Benchmark task name. Can be repeated or comma-separated. Currently: gsm8k, math.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -84,6 +87,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/pretrain_benchmarks"))
     parser.add_argument("--gsm8k-train-path", type=Path, default=Path("datasets/gsm8k/train.parquet"))
     parser.add_argument("--gsm8k-eval-path", type=Path, default=Path("datasets/gsm8k/test.parquet"))
+    parser.add_argument("--math-train-path", type=Path, default=Path("datasets/math/train.parquet"))
+    parser.add_argument("--math-eval-path", type=Path, default=Path("datasets/math/test.parquet"))
     parser.add_argument("--num-fewshot", type=int, default=None, help="Defaults to 8 for base mode and 0 for trained.")
     parser.add_argument("--num-samples", type=int, default=32)
     parser.add_argument("--pass-at-k", default="1,8,32", help="Comma-separated k values.")
@@ -186,6 +191,45 @@ def load_gsm8k_exemplars(train_path: Path, num_fewshot: int) -> list[dict[str, s
     return exemplars
 
 
+MATH_INSTRUCTION = r"Let's think step by step and output the final answer within \boxed{}."
+
+
+def prompt_messages(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return value
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if hasattr(value, "as_py"):
+        return value.as_py()
+    return list(value)
+
+
+def strip_math_instruction(text: str) -> str:
+    return text.replace(" " + MATH_INSTRUCTION, "").replace(MATH_INSTRUCTION, "").strip()
+
+
+def load_math_exemplars(train_path: Path, num_fewshot: int) -> list[dict[str, str]]:
+    if num_fewshot <= 0:
+        return []
+    train_df = pd.read_parquet(train_path)
+    if len(train_df) < num_fewshot:
+        raise ValueError(f"Requested {num_fewshot} exemplars but {train_path} has {len(train_df)} rows.")
+    exemplars = []
+    for row in train_df.head(num_fewshot).to_dict("records"):
+        messages = prompt_messages(row["prompt"])
+        question = strip_math_instruction(str(messages[-1]["content"]))
+        ground_truth = str(extract_map(row["reward_model"])["ground_truth"])
+        exemplars.append(
+            {
+                "question": question,
+                "answer": f"The final answer is \\boxed{{{ground_truth}}}.",
+                "boxed_answer": f"The final answer is \\boxed{{{ground_truth}}}.",
+                "ground_truth": ground_truth,
+            }
+        )
+    return exemplars
+
+
 def gsm8k_prompt(question: str, exemplars: list[dict[str, str]], prompt_mode: str, prompt_style: str) -> str:
     if prompt_style == "rlx":
         suffix = 'Let\'s think step by step and output the final answer after "####".'
@@ -221,9 +265,32 @@ def gsm8k_prompt(question: str, exemplars: list[dict[str, str]], prompt_mode: st
     raise ValueError(f"Unknown prompt style: {prompt_style}")
 
 
-def resolve_answer_format(prompt_style: str, answer_format: str) -> str:
+def math_prompt(question: str, exemplars: list[dict[str, str]], prompt_mode: str, prompt_style: str) -> str:
+    if prompt_style == "validation_chat":
+        if prompt_mode == "base":
+            blocks = []
+            for example in exemplars:
+                blocks.append(f"User: {example['question']} {MATH_INSTRUCTION}\n\nAssistant: {example['boxed_answer']}")
+            blocks.append(f"User: {question} {MATH_INSTRUCTION}\n\nAssistant:")
+            return "\n\n".join(blocks)
+        return f"User: {question} {MATH_INSTRUCTION}\n\nAssistant:"
+
+    # MATH always uses boxed final answers. Treat rlx as boxed here so a mixed
+    # gsm8k,math run cannot accidentally ask MATH for GSM8K #### answers.
+    if prompt_mode == "base":
+        blocks = []
+        for example in exemplars:
+            blocks.append(f"Problem: {example['question']}\nSolution: {example['boxed_answer']}")
+        blocks.append(f"Problem: {question}\nSolution: {MATH_INSTRUCTION}")
+        return "\n\n".join(blocks)
+    return f"Problem: {question}\nSolution: {MATH_INSTRUCTION}"
+
+
+def resolve_answer_format(prompt_style: str, answer_format: str, task_name: str = "gsm8k") -> str:
     if answer_format != "auto":
         return answer_format
+    if task_name == "math":
+        return "boxed"
     if prompt_style == "rlx":
         return "flexible_numeric"
     return "boxed"
@@ -239,6 +306,22 @@ def score_completion(completion: str, ground_truth: str, answer_format: str) -> 
     else:
         raise ValueError(f"Unknown answer format: {answer_format}")
     return normalize_answer(answer) == normalize_answer(ground_truth) if answer is not None else False, answer
+
+
+def score_math_completion(completion: str, ground_truth: str, answer_format: str) -> tuple[bool, str | None]:
+    del answer_format
+    answer = extract_boxed_solution(completion)
+    if answer is None:
+        return False, None
+    if normalize_answer(answer) == normalize_answer(ground_truth):
+        return True, answer
+    try:
+        from verl.utils.reward_score.feedback.math import verify as verify_math
+
+        correct, verified_answer = verify_math(completion, ground_truth)
+        return bool(correct), verified_answer or answer
+    except Exception:
+        return False, answer
 
 
 def normalize_answer(value: str | None) -> str | None:
@@ -303,11 +386,23 @@ def task_registry(args: argparse.Namespace) -> dict[str, TaskSpec]:
             train_path=args.gsm8k_train_path,
             eval_path=args.gsm8k_eval_path,
             prompt_builder=gsm8k_prompt,
-        )
+            exemplar_loader=load_gsm8k_exemplars,
+            row_loader=load_gsm8k_eval_rows,
+            scorer=score_completion,
+        ),
+        "math": TaskSpec(
+            name="math",
+            train_path=args.math_train_path,
+            eval_path=args.math_eval_path,
+            prompt_builder=math_prompt,
+            exemplar_loader=load_math_exemplars,
+            row_loader=load_math_eval_rows,
+            scorer=score_math_completion,
+        ),
     }
 
 
-def load_eval_rows(path: Path, max_examples: int | None) -> list[dict[str, Any]]:
+def load_gsm8k_eval_rows(path: Path, max_examples: int | None) -> list[dict[str, Any]]:
     df = pd.read_parquet(path)
     if max_examples is not None:
         df = df.head(max_examples)
@@ -319,6 +414,26 @@ def load_eval_rows(path: Path, max_examples: int | None) -> list[dict[str, Any]]
             {
                 "index": extra.get("index", len(rows)),
                 "question": str(extra["question"]).strip(),
+                "ground_truth": str(reward["ground_truth"]),
+                "source_row": row,
+            }
+        )
+    return rows
+
+
+def load_math_eval_rows(path: Path, max_examples: int | None) -> list[dict[str, Any]]:
+    df = pd.read_parquet(path)
+    if max_examples is not None:
+        df = df.head(max_examples)
+    rows = []
+    for row in df.to_dict("records"):
+        extra = extract_map(row["extra_info"])
+        reward = extract_map(row["reward_model"])
+        messages = prompt_messages(row["prompt"])
+        rows.append(
+            {
+                "index": extra.get("index", len(rows)),
+                "question": strip_math_instruction(str(messages[-1]["content"])),
                 "ground_truth": str(reward["ground_truth"]),
                 "source_row": row,
             }
@@ -471,9 +586,9 @@ def evaluate_checkpoint_task(
     fewshot = args.num_fewshot
     if fewshot is None:
         fewshot = 8 if args.prompt_mode == "base" else 0
-    answer_format = resolve_answer_format(args.prompt_style, args.answer_format)
-    exemplars = load_gsm8k_exemplars(task.train_path, fewshot)
-    rows = load_eval_rows(task.eval_path, args.max_examples)
+    answer_format = resolve_answer_format(args.prompt_style, args.answer_format, task.name)
+    exemplars = task.exemplar_loader(task.train_path, fewshot)
+    rows = task.row_loader(task.eval_path, args.max_examples)
 
     if args.backend == "hf":
         model, tokenizer = load_model_and_tokenizer(args, checkpoint.path)
@@ -497,7 +612,7 @@ def evaluate_checkpoint_task(
                 correct_count = 0
                 for sample_idx, raw_completion in enumerate(completions):
                     stopped_completion, stop_reason = apply_stop_sequences(raw_completion, stop_sequences)
-                    correct, extracted_answer = score_completion(stopped_completion, row["ground_truth"], answer_format)
+                    correct, extracted_answer = task.scorer(stopped_completion, row["ground_truth"], answer_format)
                     correct_count += int(correct)
                     sample_records.append(
                         {
@@ -590,7 +705,10 @@ def main() -> None:
     config = vars(args).copy()
     config["output_dir"] = str(args.output_dir)
     config["stop_sequences"] = stop_sequences
-    config["resolved_answer_format"] = resolve_answer_format(args.prompt_style, args.answer_format)
+    config["resolved_answer_format"] = {
+        task_name: resolve_answer_format(args.prompt_style, args.answer_format, task_name)
+        for task_name in tasks
+    }
     config["tasks"] = tasks
     (run_dir / "run_config.json").write_text(json.dumps(config, indent=2, default=str), encoding="utf-8")
 

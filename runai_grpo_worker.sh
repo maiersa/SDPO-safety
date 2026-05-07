@@ -24,6 +24,9 @@ VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-"False"}
 VAL_ONLY=${VAL_ONLY:-"False"}
 TEST_FREQ=${TEST_FREQ:-"50"}
 SAVE_FREQ=${SAVE_FREQ:-"50"}
+MAX_LATEST_CKPT_TO_KEEP=${MAX_LATEST_CKPT_TO_KEEP:-"null"}
+BEST_CHECKPOINT_METRIC=${BEST_CHECKPOINT_METRIC:-""}
+BEST_CHECKPOINT_MODE=${BEST_CHECKPOINT_MODE:-"max"}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-"0"}
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-""}
 VAL_GENERATION_N=${VAL_GENERATION_N:-"4"}
@@ -184,6 +187,7 @@ trainer.validation_generations_only=$VALIDATION_GENERATIONS_ONLY \
 trainer.test_freq=$TEST_FREQ \
 trainer.save_freq=$SAVE_FREQ \
 trainer.max_actor_ckpt_to_keep=2 \
+trainer.max_latest_ckpt_to_keep=$MAX_LATEST_CKPT_TO_KEEP \
 trainer.resume_mode=$RESUME_MODE \
 actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
 actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE \
@@ -234,6 +238,10 @@ if [[ -n "$RESUME_FROM_PATH" ]]; then
     ARGS="$ARGS trainer.resume_from_path=$RESUME_FROM_PATH"
 fi
 
+if [[ -n "$BEST_CHECKPOINT_METRIC" ]]; then
+    ARGS="$ARGS trainer.best_checkpoint_metric=$BEST_CHECKPOINT_METRIC trainer.best_checkpoint_mode=$BEST_CHECKPOINT_MODE"
+fi
+
 if [[ -n "$MAX_MODEL_LEN" ]]; then
     ARGS="$ARGS max_model_len=$MAX_MODEL_LEN actor_rollout_ref.rollout.max_model_len=$MAX_MODEL_LEN"
 fi
@@ -260,6 +268,7 @@ echo "Rollout GPU memory utilization: $ROLLOUT_GPU_MEMORY_UTILIZATION"
 echo "Rollout max batched tokens: $ROLLOUT_MAX_NUM_BATCHED_TOKENS"
 echo "Rollout/ref logprob micro-batch per GPU: $ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE"
 echo "Actor PPO micro-batch per GPU: $ACTOR_PPO_MICRO_BATCH_SIZE"
+echo "Checkpoint retention: latest=$MAX_LATEST_CKPT_TO_KEEP best_metric=${BEST_CHECKPOINT_METRIC:-<disabled>} best_mode=$BEST_CHECKPOINT_MODE"
 echo "Validation sampling: do_sample=$VAL_DO_SAMPLE temperature=$VAL_TEMPERATURE top_p=${VAL_TOP_P:-<default>} top_k=${VAL_TOP_K:-<default>} n=$VAL_GENERATION_N"
 echo "----------------------------------------------------------------"
 
