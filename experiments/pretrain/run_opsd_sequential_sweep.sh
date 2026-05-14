@@ -26,10 +26,13 @@ SEEDS=${SEEDS:-"0"}
 STAGE1_ROOT=${STAGE1_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage1}
 STAGE2_ROOT=${STAGE2_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2}
 STAGE3_ROOT=${STAGE3_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-stage3}
+THINK_ROOT=${THINK_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-think}
+THINK_DPO_ROOT=${THINK_DPO_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-think-dpo}
 THINK_SFT_ROOT=${THINK_SFT_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-think-sft}
 INSTRUCT_SFT_ROOT=${INSTRUCT_SFT_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-instruct-sft}
 INSTRUCT_DPO_ROOT=${INSTRUCT_DPO_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-instruct-dpo}
 INSTRUCT_RL_ROOT=${INSTRUCT_RL_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-instruct}
+RL_ZERO_MATH_ROOT=${RL_ZERO_MATH_ROOT:-/dlabscratch1/${USER}/checkpoints/olmo-7b-rl-zero-math}
 
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-32}
 ROLLOUT_BATCH_SIZE=${ROLLOUT_BATCH_SIZE:-8}
@@ -127,6 +130,12 @@ resolve_model_path() {
         variant="${ckpt%%@*}"
         revision="${ckpt#*@}"
         case "$variant" in
+            think)
+                printf '%s' "${THINK_ROOT}/${revision}"
+                ;;
+            think-dpo)
+                printf '%s' "${THINK_DPO_ROOT}/${revision}"
+                ;;
             think-sft)
                 printf '%s' "${THINK_SFT_ROOT}/${revision}"
                 ;;
@@ -138,6 +147,9 @@ resolve_model_path() {
                 ;;
             instruct|instruct-rl)
                 printf '%s' "${INSTRUCT_RL_ROOT}/${revision}"
+                ;;
+            rl-zero-math)
+                printf '%s' "${RL_ZERO_MATH_ROOT}/${revision}"
                 ;;
             *)
                 printf '%s' "$ckpt"

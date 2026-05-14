@@ -62,6 +62,10 @@ normalize_list() {
     echo "$raw" | xargs
 }
 
+normalized_tasks() {
+    normalize_list "$TASKS"
+}
+
 sanitize_label() {
     local label="$1"
     label="${label//@/-}"
@@ -121,33 +125,40 @@ checkpoint_name() {
 
 completed_summary_csv() {
     local output_dir="$1"
+    local task="$2"
     if [[ ! -d "$output_dir" ]]; then
         return 0
     fi
-    "$PYTHON_BIN" - "$output_dir" "$TASKS" "$PROMPT_STYLE" "$NUM_SAMPLES" "$PASS_AT_K" <<'PY'
+    "$PYTHON_BIN" - "$output_dir" "$task" "$PROMPT_STYLE" "$NUM_SAMPLES" "$PASS_AT_K" <<'PY'
 import csv
 import sys
 from pathlib import Path
 
 output_dir = Path(sys.argv[1])
-tasks = {part.strip().lower() for raw in sys.argv[2].split(",") for part in raw.split() if part.strip()}
+task = sys.argv[2].lower()
 prompt_style = sys.argv[3]
 num_samples = sys.argv[4]
 pass_at_k = [f"pass@{part.strip()}" for part in sys.argv[5].split(",") if part.strip()]
+accepted_prompt_styles = {prompt_style}
+if task == "math" and prompt_style == "rlx":
+    # MATH is forced to boxed prompting internally even in mixed
+    # TASKS=gsm8k,math runs where the global prompt style is rlx.
+    accepted_prompt_styles.add("boxed")
 
 for path in sorted(output_dir.glob("*/summary.csv"), reverse=True):
     with path.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     if not rows:
         continue
-    row_tasks = {row.get("task", "").lower() for row in rows}
-    has_tasks = tasks.issubset(row_tasks)
-    has_prompt_style = all(row.get("prompt_style") == prompt_style for row in rows if row.get("task", "").lower() in tasks)
-    has_num_samples = all(row.get("num_samples") == num_samples for row in rows if row.get("task", "").lower() in tasks)
-    has_metrics = all(metric in rows[0] and rows[0].get(metric, "") != "" for metric in pass_at_k)
-    if has_tasks and has_prompt_style and has_num_samples and has_metrics:
-        print(path)
-        break
+    for row in rows:
+        if row.get("task", "").lower() != task:
+            continue
+        has_prompt_style = row.get("prompt_style") in accepted_prompt_styles
+        has_num_samples = row.get("num_samples") == num_samples
+        has_metrics = all(metric in row and row.get(metric, "") != "" for metric in pass_at_k)
+        if has_prompt_style and has_num_samples and has_metrics:
+            print(path)
+            raise SystemExit(0)
 PY
 }
 
@@ -257,7 +268,7 @@ run_group() {
     local prompt_mode="$2"
     local num_fewshot="$3"
     local raw_checkpoints="$4"
-    local ckpt resolved name output_dir existing_summary log_path status
+    local ckpt resolved name output_dir existing_summary log_path status task
 
     raw_checkpoints="$(normalize_list "$raw_checkpoints")"
     if [[ -z "$raw_checkpoints" ]]; then
@@ -271,104 +282,109 @@ run_group() {
         resolved="$(ensure_eval_checkpoint "$resolved")"
         name="$(checkpoint_name "$resolved")"
         output_dir="${OUTPUT_ROOT}/${group_name}/${name}"
-        existing_summary="$(completed_summary_csv "$output_dir")"
-        if [[ "$SKIP_COMPLETED_BENCHMARKS" == "true" && -n "$existing_summary" ]]; then
-            echo "=============================================================="
-            echo "Skipping completed benchmark"
-            echo "Group: $group_name"
-            echo "Checkpoint: $resolved"
-            echo "Existing summary: $existing_summary"
-            echo "Set SKIP_COMPLETED_BENCHMARKS=false to rerun."
-            echo "=============================================================="
-            continue
-        fi
 
-        echo "=============================================================="
-        echo "Running pretrain benchmark"
-        echo "Group: $group_name"
-        echo "Prompt mode: $prompt_mode"
-        echo "Checkpoint: $resolved"
-        echo "Output dir: $output_dir"
-        echo "Batch size: $BATCH_SIZE"
-        echo "=============================================================="
-
-        if [[ "$LOG_TO_FILE" == "true" ]]; then
-            mkdir -p "$BENCHMARK_LOG_DIR"
-            log_path="${BENCHMARK_LOG_DIR}/${group_name}_${name}_$(date -u +%Y%m%d_%H%M%S).log"
-            echo "Writing benchmark log: $log_path"
-            set +e
-            CHECKPOINTS="$resolved" \
-            PROMPT_MODE="$prompt_mode" \
-            PROMPT_STYLE="$PROMPT_STYLE" \
-            ANSWER_FORMAT="$ANSWER_FORMAT" \
-            NUM_FEWSHOT="$num_fewshot" \
-            TASKS="$TASKS" \
-            TEMPERATURE="$TEMPERATURE" \
-            TOP_P="$TOP_P" \
-            TOP_K="$TOP_K" \
-            NUM_SAMPLES="$NUM_SAMPLES" \
-            PASS_AT_K="$PASS_AT_K" \
-            MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
-            MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" \
-            BATCH_SIZE="$BATCH_SIZE" \
-            MAX_EXAMPLES="$MAX_EXAMPLES" \
-            OUTPUT_DIR="$output_dir" \
-            GSM8K_TRAIN_PATH="$GSM8K_TRAIN_PATH" \
-            GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
-            MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
-            MATH_EVAL_PATH="$MATH_EVAL_PATH" \
-            BACKEND="$BACKEND" \
-            TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
-            GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
-            MAX_MODEL_LEN="$MAX_MODEL_LEN" \
-            ENFORCE_EAGER="$ENFORCE_EAGER" \
-            SEED="$SEED" \
-            DEVICE_MAP="$DEVICE_MAP" \
-            TORCH_DTYPE="$TORCH_DTYPE" \
-            TRUST_REMOTE_CODE="$TRUST_REMOTE_CODE" \
-            ADD_DEFAULT_STOPS="$ADD_DEFAULT_STOPS" \
-            PYTHON_BIN="$PYTHON_BIN" \
-            bash "${REPO_DIR}/experiments/pretrain/run_pretrain_benchmark_eval.sh" 2>&1 | tee -a "$log_path"
-            status=${PIPESTATUS[0]}
-            set -e
-            if [[ "$status" -ne 0 ]]; then
-                echo "Benchmark failed with status $status. Log: $log_path" >&2
-                return "$status"
+        for task in $(normalized_tasks); do
+            existing_summary="$(completed_summary_csv "$output_dir" "$task")"
+            if [[ "$SKIP_COMPLETED_BENCHMARKS" == "true" && -n "$existing_summary" ]]; then
+                echo "=============================================================="
+                echo "Skipping completed benchmark"
+                echo "Group: $group_name"
+                echo "Task: $task"
+                echo "Checkpoint: $resolved"
+                echo "Existing summary: $existing_summary"
+                echo "Set SKIP_COMPLETED_BENCHMARKS=false to rerun."
+                echo "=============================================================="
+                continue
             fi
-        else
-            CHECKPOINTS="$resolved" \
-            PROMPT_MODE="$prompt_mode" \
-            PROMPT_STYLE="$PROMPT_STYLE" \
-            ANSWER_FORMAT="$ANSWER_FORMAT" \
-            NUM_FEWSHOT="$num_fewshot" \
-            TASKS="$TASKS" \
-            TEMPERATURE="$TEMPERATURE" \
-            TOP_P="$TOP_P" \
-            TOP_K="$TOP_K" \
-            NUM_SAMPLES="$NUM_SAMPLES" \
-            PASS_AT_K="$PASS_AT_K" \
-            MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
-            MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" \
-            BATCH_SIZE="$BATCH_SIZE" \
-            MAX_EXAMPLES="$MAX_EXAMPLES" \
-            OUTPUT_DIR="$output_dir" \
-            GSM8K_TRAIN_PATH="$GSM8K_TRAIN_PATH" \
-            GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
-            MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
-            MATH_EVAL_PATH="$MATH_EVAL_PATH" \
-            BACKEND="$BACKEND" \
-            TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
-            GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
-            MAX_MODEL_LEN="$MAX_MODEL_LEN" \
-            ENFORCE_EAGER="$ENFORCE_EAGER" \
-            SEED="$SEED" \
-            DEVICE_MAP="$DEVICE_MAP" \
-            TORCH_DTYPE="$TORCH_DTYPE" \
-            TRUST_REMOTE_CODE="$TRUST_REMOTE_CODE" \
-            ADD_DEFAULT_STOPS="$ADD_DEFAULT_STOPS" \
-            PYTHON_BIN="$PYTHON_BIN" \
-            bash "${REPO_DIR}/experiments/pretrain/run_pretrain_benchmark_eval.sh"
-        fi
+
+            echo "=============================================================="
+            echo "Running pretrain benchmark"
+            echo "Group: $group_name"
+            echo "Task: $task"
+            echo "Prompt mode: $prompt_mode"
+            echo "Checkpoint: $resolved"
+            echo "Output dir: $output_dir"
+            echo "Batch size: $BATCH_SIZE"
+            echo "=============================================================="
+
+            if [[ "$LOG_TO_FILE" == "true" ]]; then
+                mkdir -p "$BENCHMARK_LOG_DIR"
+                log_path="${BENCHMARK_LOG_DIR}/${group_name}_${name}_${task}_$(date -u +%Y%m%d_%H%M%S).log"
+                echo "Writing benchmark log: $log_path"
+                set +e
+                CHECKPOINTS="$resolved" \
+                PROMPT_MODE="$prompt_mode" \
+                PROMPT_STYLE="$PROMPT_STYLE" \
+                ANSWER_FORMAT="$ANSWER_FORMAT" \
+                NUM_FEWSHOT="$num_fewshot" \
+                TASKS="$task" \
+                TEMPERATURE="$TEMPERATURE" \
+                TOP_P="$TOP_P" \
+                TOP_K="$TOP_K" \
+                NUM_SAMPLES="$NUM_SAMPLES" \
+                PASS_AT_K="$PASS_AT_K" \
+                MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
+                MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" \
+                BATCH_SIZE="$BATCH_SIZE" \
+                MAX_EXAMPLES="$MAX_EXAMPLES" \
+                OUTPUT_DIR="$output_dir" \
+                GSM8K_TRAIN_PATH="$GSM8K_TRAIN_PATH" \
+                GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
+                MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
+                MATH_EVAL_PATH="$MATH_EVAL_PATH" \
+                BACKEND="$BACKEND" \
+                TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
+                GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
+                MAX_MODEL_LEN="$MAX_MODEL_LEN" \
+                ENFORCE_EAGER="$ENFORCE_EAGER" \
+                SEED="$SEED" \
+                DEVICE_MAP="$DEVICE_MAP" \
+                TORCH_DTYPE="$TORCH_DTYPE" \
+                TRUST_REMOTE_CODE="$TRUST_REMOTE_CODE" \
+                ADD_DEFAULT_STOPS="$ADD_DEFAULT_STOPS" \
+                PYTHON_BIN="$PYTHON_BIN" \
+                bash "${REPO_DIR}/experiments/pretrain/run_pretrain_benchmark_eval.sh" 2>&1 | tee -a "$log_path"
+                status=${PIPESTATUS[0]}
+                set -e
+                if [[ "$status" -ne 0 ]]; then
+                    echo "Benchmark failed with status $status. Log: $log_path" >&2
+                    return "$status"
+                fi
+            else
+                CHECKPOINTS="$resolved" \
+                PROMPT_MODE="$prompt_mode" \
+                PROMPT_STYLE="$PROMPT_STYLE" \
+                ANSWER_FORMAT="$ANSWER_FORMAT" \
+                NUM_FEWSHOT="$num_fewshot" \
+                TASKS="$task" \
+                TEMPERATURE="$TEMPERATURE" \
+                TOP_P="$TOP_P" \
+                TOP_K="$TOP_K" \
+                NUM_SAMPLES="$NUM_SAMPLES" \
+                PASS_AT_K="$PASS_AT_K" \
+                MAX_NEW_TOKENS="$MAX_NEW_TOKENS" \
+                MAX_PROMPT_TOKENS="$MAX_PROMPT_TOKENS" \
+                BATCH_SIZE="$BATCH_SIZE" \
+                MAX_EXAMPLES="$MAX_EXAMPLES" \
+                OUTPUT_DIR="$output_dir" \
+                GSM8K_TRAIN_PATH="$GSM8K_TRAIN_PATH" \
+                GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
+                MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
+                MATH_EVAL_PATH="$MATH_EVAL_PATH" \
+                BACKEND="$BACKEND" \
+                TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
+                GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
+                MAX_MODEL_LEN="$MAX_MODEL_LEN" \
+                ENFORCE_EAGER="$ENFORCE_EAGER" \
+                SEED="$SEED" \
+                DEVICE_MAP="$DEVICE_MAP" \
+                TORCH_DTYPE="$TORCH_DTYPE" \
+                TRUST_REMOTE_CODE="$TRUST_REMOTE_CODE" \
+                ADD_DEFAULT_STOPS="$ADD_DEFAULT_STOPS" \
+                PYTHON_BIN="$PYTHON_BIN" \
+                bash "${REPO_DIR}/experiments/pretrain/run_pretrain_benchmark_eval.sh"
+            fi
+        done
     done
 }
 
