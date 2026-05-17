@@ -1261,3 +1261,36 @@ SKIP_COMPLETED_BENCHMARKS=true \
 LOG_TO_FILE=true \
 AUTO_MERGE_FSDP=true \
 bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_pretrain_benchmark_comparison.sh
+
+# OPSD gradient-alignment diagnostic smoke run.
+# Mirrors the OPSD training sweep checkpoint/env style, but runs the offline
+# alignment diagnostic pipeline. This starts with 1 question, 1 rollout, 1 node,
+# top-2 candidate sets, and 2 forced continuations per candidate.
+rs opsd-align-smoke-${USER}-stage1 --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+STAGE1_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage1 \
+STAGE2_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage2 \
+CHECKPOINTS=stage1-step500000,stage1-step656000 \
+ALIGNMENT_EXP_NAME=opsd_alignment_smoke_stage1 \
+ALIGNMENT_GPUS=8 \
+QUESTION_LIMIT=1 \
+STUDENT_ROLLOUTS_PER_QUESTION=1 \
+NODES_PER_ROLLOUT=1 \
+TOP_K_STUDENT=2 \
+TOP_K_TEACHER=2 \
+FORCED_ROLLOUTS_PER_CANDIDATE=2 \
+MAX_POSITIONS_PER_ROLLOUT=32 \
+DISTILLATION_OBJECTIVE=forward_kl \
+JSD_ALPHA=0.5 \
+TORCH_DTYPE=bf16 \
+GENERATION_DEVICE=auto \
+SHARD_DEVICE=cuda:0 \
+TRAINER_GPUS_PER_NODE=8 \
+SKIP_COMPLETED=true \
+OVERWRITE=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_alignment_smoke.sh
+
