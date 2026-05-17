@@ -1,0 +1,45 @@
+# Copy this file to a private path, fill in checkpoint locations, and use it
+# with the same pipeline commands. This template is intentionally not ignored so
+# the expected config shape stays visible.
+experiment_name: local_smoke_test
+seed: 17
+
+models:
+  - name: olmo3_7b_stage1_final
+    backend: hf
+    path: /absolute/path/to/olmo3_7b_stage1_final
+    trust_remote_code: true
+    max_new_tokens: 512
+  - name: olmo3_7b_stage2_final
+    backend: hf
+    path: /absolute/path/to/olmo3_7b_stage2_final
+    trust_remote_code: true
+    max_new_tokens: 512
+  - name: olmo3_7b_think_final
+    backend: hf
+    path: /absolute/path/to/olmo3_7b_think_final
+    trust_remote_code: true
+    max_new_tokens: 1024
+
+teacher_contexts:
+  - answer_only
+  - full_solution
+
+generation:
+  temperature: 0.7
+  top_p: 0.95
+  student_rollouts_per_question: 1
+
+diagnostic:
+  questions_limit: 5
+  nodes_per_rollout: 1
+  top_k_student: 2
+  top_k_teacher: 2
+  forced_rollouts_per_candidate: 2
+  distillation_objective: forward_kl
+  jsd_alpha: 0.5
+  min_gradient_norm: 1.0e-8
+
+paths:
+  questions: opsd_alignment/data/questions.jsonl
+  output_dir: opsd_alignment/outputs/local_smoke_test
