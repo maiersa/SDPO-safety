@@ -11,6 +11,7 @@ class NodeScore:
     token_position: int
     student_entropy: float
     student_teacher_kl: float
+    gkd_magnitude: float = 0.0
     special_token: bool = False
     after_final_answer: bool = False
 
@@ -20,8 +21,14 @@ def select_diagnostic_nodes(
     nodes_per_rollout: int,
     min_generated_position: int = 3,
     num_high_kl: int | None = None,
+    selection_policy: str = "kl_entropy",
 ) -> list[tuple[NodeScore, str]]:
-    """Select high-KL and high-entropy nodes from scored positions."""
+    """Select diagnostic nodes from scored positions.
+
+    ``kl_entropy`` is the original conservative heuristic. ``gkd_magnitude``
+    follows the paper's spirit more closely by prioritizing positions where the
+    local GKD/forward-KL distillation update has the largest logit-space norm.
+    """
     candidates = [
         score
         for score in node_scores
@@ -29,6 +36,14 @@ def select_diagnostic_nodes(
     ]
     if nodes_per_rollout <= 0:
         return []
+
+    if selection_policy == "gkd_magnitude":
+        return [
+            (score, "high_gkd_magnitude")
+            for score in sorted(candidates, key=lambda item: item.gkd_magnitude, reverse=True)[:nodes_per_rollout]
+        ]
+    if selection_policy != "kl_entropy":
+        raise ValueError(f"Unsupported node selection policy: {selection_policy!r}")
 
     num_high_kl = num_high_kl if num_high_kl is not None else max(nodes_per_rollout - 1, 0)
     selected: list[tuple[NodeScore, str]] = []

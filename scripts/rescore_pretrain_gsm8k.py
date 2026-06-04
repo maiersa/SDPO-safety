@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
         default=20,
         help="Maximum recovered samples to write per prediction file.",
     )
+    parser.add_argument(
+        "--require-summary",
+        action="store_true",
+        help="Only rescore prediction files in run directories that have summary.json.",
+    )
     return parser.parse_args()
 
 
@@ -477,6 +482,10 @@ def main() -> None:
         for path in root.rglob("*__gsm8k.jsonl")
         if not path.name.endswith(".rescored.jsonl")
     )
+    if args.require_summary:
+        prediction_paths = [
+            path for path in prediction_paths if (path.parent / "summary.json").exists()
+        ]
     if not prediction_paths:
         raise SystemExit(f"No *__gsm8k.jsonl files found under {root}")
 

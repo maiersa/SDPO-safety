@@ -1294,3 +1294,35 @@ SKIP_COMPLETED=true \
 OVERWRITE=false \
 bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_alignment_smoke.sh
 
+
+# OPSD gradient-alignment pilot: strong think-SFT checkpoint vs weaker stage-1.
+# Keep CHECKPOINTS comma-separated here; space-separated values can be split by
+# the `rs ... env` wrapper before bash receives them.
+rs opsd-align-pilot-${USER}-think-sft-stage1 --gpu 8.0 --cpu 32 --memory 240G --node-pools h100 --large-shm -- env \
+USER=$USER \
+CONDA_ENV=/mnt/dlabscratch1/samaier/conda-envs/sdpo-grpo \
+REPO_DIR=/dlabscratch1/${USER}/projects/SDPO-safety \
+LOG_DIR=/dlabscratch1/${USER}/output \
+CKPT_DIR=/dlabscratch1/${USER}/checkpoints \
+STAGE1_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-stage1 \
+THINK_SFT_ROOT=/dlabscratch1/${USER}/checkpoints/olmo-7b-think-sft \
+CHECKPOINTS=think-sft@main,stage1-step500000 \
+ALIGNMENT_EXP_NAME=opsd_alignment_pilot_gkd_think_sft_vs_stage1_500k \
+ALIGNMENT_GPUS=8 \
+QUESTION_LIMIT=20 \
+STUDENT_ROLLOUTS_PER_QUESTION=2 \
+NODES_PER_ROLLOUT=4 \
+NODE_SELECTION_POLICY=gkd_magnitude \
+TOP_K_STUDENT=8 \
+TOP_K_TEACHER=8 \
+FORCED_ROLLOUTS_PER_CANDIDATE=8 \
+MAX_POSITIONS_PER_ROLLOUT=64 \
+DISTILLATION_OBJECTIVE=forward_kl \
+JSD_ALPHA=0.5 \
+TORCH_DTYPE=bf16 \
+GENERATION_DEVICE=auto \
+SHARD_DEVICE=cuda:0 \
+TRAINER_GPUS_PER_NODE=8 \
+SKIP_COMPLETED=true \
+OVERWRITE=false \
+bash /dlabscratch1/${USER}/projects/SDPO-safety/experiments/pretrain/run_opsd_alignment_smoke.sh

@@ -38,6 +38,7 @@ TOP_K_STUDENT=${TOP_K_STUDENT:-2}
 TOP_K_TEACHER=${TOP_K_TEACHER:-2}
 FORCED_ROLLOUTS_PER_CANDIDATE=${FORCED_ROLLOUTS_PER_CANDIDATE:-2}
 MAX_POSITIONS_PER_ROLLOUT=${MAX_POSITIONS_PER_ROLLOUT:-32}
+NODE_SELECTION_POLICY=${NODE_SELECTION_POLICY:-kl_entropy}
 DISTILLATION_OBJECTIVE=${DISTILLATION_OBJECTIVE:-forward_kl}
 JSD_ALPHA=${JSD_ALPHA:-0.5}
 TEMPERATURE=${TEMPERATURE:-0.7}
@@ -104,8 +105,17 @@ if [[ "$OVERWRITE" == "true" ]]; then
 fi
 
 mkdir -p "$ALIGNMENT_OUTPUT_DIR" "$LOG_DIR/opsd_alignment"
-RUN_LOG="${ALIGNMENT_OUTPUT_DIR}/run.log"
-exec > >(tee -a "$RUN_LOG") 2>&1
+RUN_TS="$(date -u +%Y%m%d_%H%M%S)"
+RUN_LOG_DIR="${ALIGNMENT_OUTPUT_DIR}/logs"
+LATEST_RUN_LOG="${ALIGNMENT_OUTPUT_DIR}/run.log"
+RUN_LOG="${RUN_LOG_DIR}/run_${RUN_TS}.log"
+mkdir -p "$RUN_LOG_DIR"
+: > "$LATEST_RUN_LOG"
+exec > >(tee -a "$LATEST_RUN_LOG" -a "$RUN_LOG") 2>&1
+
+echo "===== OPSD alignment smoke run started ${RUN_TS} UTC ====="
+echo "Latest log: $LATEST_RUN_LOG"
+echo "Archived log: $RUN_LOG"
 
 trap 'echo "ERROR: run_opsd_alignment_smoke.sh failed at line $LINENO" >&2' ERR
 
@@ -132,7 +142,7 @@ export STAGE1_ROOT STAGE2_ROOT STAGE3_ROOT THINK_ROOT THINK_DPO_ROOT THINK_SFT_R
 export INSTRUCT_SFT_ROOT INSTRUCT_DPO_ROOT INSTRUCT_RL_ROOT RL_ZERO_MATH_ROOT
 export ALIGNMENT_EXP_NAME TEMPERATURE TOP_P STUDENT_ROLLOUTS_PER_QUESTION QUESTION_LIMIT
 export NODES_PER_ROLLOUT TOP_K_STUDENT TOP_K_TEACHER FORCED_ROLLOUTS_PER_CANDIDATE
-export DISTILLATION_OBJECTIVE JSD_ALPHA
+export NODE_SELECTION_POLICY DISTILLATION_OBJECTIVE JSD_ALPHA
 
 python - "$ALIGNMENT_CONFIG" "$ALIGNMENT_OUTPUT_DIR" "$QUESTIONS_PATH" "$CHECKPOINTS" <<'PYCONFIG'
 import os
@@ -214,6 +224,7 @@ lines.extend([
     f"  top_k_student: {os.environ['TOP_K_STUDENT']}",
     f"  top_k_teacher: {os.environ['TOP_K_TEACHER']}",
     f"  forced_rollouts_per_candidate: {os.environ['FORCED_ROLLOUTS_PER_CANDIDATE']}",
+    f"  selection_policy: {os.environ['NODE_SELECTION_POLICY']}",
     f"  distillation_objective: {os.environ['DISTILLATION_OBJECTIVE']}",
     f"  jsd_alpha: {os.environ['JSD_ALPHA']}",
     "  min_gradient_norm: 1.0e-8",
@@ -254,7 +265,7 @@ if [[ "$ALIGNMENT_GPUS" -gt 1 ]]; then
     python -m opsd_alignment.scripts.merge_jsonl \
         --config "$ALIGNMENT_CONFIG" \
         --artifact distributions \
-        "${overwrite_args[@]}"
+        --overwrite
     distribution_input_args=(--distribution-glob "${ALIGNMENT_OUTPUT_DIR}/distributions/teacher_student_distributions.shard*-of-*.jsonl")
 else
     distribution_input_args=()
@@ -271,7 +282,7 @@ if [[ "$ALIGNMENT_GPUS" -gt 1 ]]; then
     python -m opsd_alignment.scripts.merge_jsonl \
         --config "$ALIGNMENT_CONFIG" \
         --artifact branches \
-        "${overwrite_args[@]}"
+        --overwrite
 fi
 
 python -m opsd_alignment.scripts.compute_gradients_and_alignment \

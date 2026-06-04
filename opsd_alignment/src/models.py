@@ -128,22 +128,28 @@ class HuggingFaceModelRunner:
         torch = self.torch
         input_ids = torch.tensor([list(prefix_token_ids)], dtype=torch.long, device=self.input_device)
         attention_mask = torch.ones_like(input_ids)
-        generator = torch.Generator(device=self.input_device)
-        generator.manual_seed(int(seed))
+        # Some custom model classes used by OLMo do not accept the standard
+        # `generator=` kwarg in `generate`. Seed the global torch RNG instead
+        # so generation remains reproducible while staying model-compatible.
+        torch.manual_seed(int(seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed))
         do_sample = temperature > 0
 
+        generate_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        if do_sample:
+            generate_kwargs["temperature"] = temperature
+            generate_kwargs["top_p"] = top_p
+
         with torch.no_grad():
-            output_ids = self.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=max_new_tokens,
-                do_sample=do_sample,
-                temperature=temperature if do_sample else None,
-                top_p=top_p if do_sample else None,
-                generator=generator,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+            output_ids = self.model.generate(**generate_kwargs)
 
         new_token_ids = output_ids[0, input_ids.shape[1] :].detach().cpu().tolist()
         return Generation(text=self.decode(new_token_ids), token_ids=new_token_ids, seed=seed)

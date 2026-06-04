@@ -36,6 +36,7 @@ GSM8K_TRAIN_PATH="${GSM8K_TRAIN_PATH:-datasets/gsm8k/train.parquet}"
 GSM8K_EVAL_PATH="${GSM8K_EVAL_PATH:-datasets/gsm8k/test.parquet}"
 MATH_TRAIN_PATH="${MATH_TRAIN_PATH:-datasets/math/train.parquet}"
 MATH_EVAL_PATH="${MATH_EVAL_PATH:-datasets/math/test.parquet}"
+MATH500_EVAL_PATH="${MATH500_EVAL_PATH:-datasets/math500/test.parquet}"
 BACKEND="${BACKEND:-hf}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
@@ -46,6 +47,7 @@ DEVICE_MAP="${DEVICE_MAP:-auto}"
 TORCH_DTYPE="${TORCH_DTYPE:-auto}"
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-false}"
 ADD_DEFAULT_STOPS="${ADD_DEFAULT_STOPS:-true}"
+RESUME_INCOMPLETE_BENCHMARKS="${RESUME_INCOMPLETE_BENCHMARKS:-true}"
 
 args=(
   "$PROJECT_ROOT/scripts/eval_pretrain_benchmarks.py"
@@ -64,6 +66,7 @@ args=(
   --gsm8k-eval-path "$GSM8K_EVAL_PATH"
   --math-train-path "$MATH_TRAIN_PATH"
   --math-eval-path "$MATH_EVAL_PATH"
+  --math500-eval-path "$MATH500_EVAL_PATH"
   --backend "$BACKEND"
   --tensor-parallel-size "$TENSOR_PARALLEL_SIZE"
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
@@ -107,6 +110,12 @@ fi
 
 if [[ "$ADD_DEFAULT_STOPS" == "false" ]]; then
   args+=(--no-add-default-stops)
+fi
+
+if [[ "$RESUME_INCOMPLETE_BENCHMARKS" == "true" ]]; then
+  args+=(--resume-incomplete)
+else
+  args+=(--no-resume-incomplete)
 fi
 
 # Comma-separated literal stop strings. To pass newlines from bash, use ANSI-C

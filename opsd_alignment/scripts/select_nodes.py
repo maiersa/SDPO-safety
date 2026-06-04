@@ -8,7 +8,7 @@ from typing import Any
 
 from opsd_alignment.scripts.common import add_config_arg, load_config, output_path
 from opsd_alignment.src.candidate_selection import union_topk_candidates
-from opsd_alignment.src.gradients import entropy, renormalize_logprobs, student_teacher_kl
+from opsd_alignment.src.gradients import distillation_gradient, entropy, renormalize_logprobs, student_teacher_kl
 from opsd_alignment.src.models import build_model_runner
 from opsd_alignment.src.node_selection import NodeScore, select_diagnostic_nodes
 from opsd_alignment.src.prompts import build_teacher_prompt
@@ -21,11 +21,13 @@ def select_node_records(
     teacher_context: str | None = None,
     model_name: str | None = None,
     max_positions_per_rollout: int | None = None,
+    selection_policy: str | None = None,
     device: str = "auto",
     torch_dtype: str = "auto",
 ) -> list[dict[str, Any]]:
     diagnostic = config["diagnostic"]
     teacher_context = teacher_context or _default_teacher_context(config)
+    selection_policy = selection_policy or str(diagnostic.get("selection_policy", "kl_entropy"))
     rollout_path = output_path(config, "rollouts", "student_rollouts.jsonl")
     rollouts = list(read_jsonl(rollout_path))
     if model_name is not None:
@@ -88,10 +90,12 @@ def select_node_records(
                 teacher_logprobs = runner.next_token_logprobs(teacher_prefix_token_ids, candidate_token_ids)
                 p_student = renormalize_logprobs(student_logprobs)
                 p_teacher = renormalize_logprobs(teacher_logprobs)
+                gkd_direction = distillation_gradient(p_student, p_teacher, objective="forward_kl")
                 score = NodeScore(
                     token_position=token_position,
                     student_entropy=entropy(p_student),
                     student_teacher_kl=student_teacher_kl(p_student, p_teacher),
+                    gkd_magnitude=_l2_norm(gkd_direction),
                     special_token=generated_token_ids[token_position] in _special_token_ids(runner),
                     after_final_answer=_after_final_answer_marker(runner.decode(generated_token_ids[:token_position])),
                 )
@@ -100,6 +104,7 @@ def select_node_records(
                     "candidate_token_ids": candidate_token_ids,
                     "p_student": p_student,
                     "p_teacher": p_teacher,
+                    "gkd_magnitude": score.gkd_magnitude,
                     "student_prefix_token_ids": student_prefix_token_ids,
                     "student_prefix_text": student_prefix_text,
                     "teacher_prefix_token_ids": teacher_prefix_token_ids,
@@ -109,6 +114,7 @@ def select_node_records(
             selected = select_diagnostic_nodes(
                 scored_nodes,
                 nodes_per_rollout=int(diagnostic.get("nodes_per_rollout", 3)),
+                selection_policy=selection_policy,
             )
             for selected_index, (score, reason) in enumerate(selected):
                 metadata = score_metadata[score.token_position]
@@ -129,6 +135,8 @@ def select_node_records(
                         "teacher_prefix_token_ids_for_selection": metadata["teacher_prefix_token_ids"],
                         "student_entropy": score.student_entropy,
                         "student_teacher_kl": score.student_teacher_kl,
+                        "gkd_magnitude": score.gkd_magnitude,
+                        "selection_policy": selection_policy,
                         "student_rollout_correct": rollout["is_correct"],
                         "candidate_token_ids_for_selection": metadata["candidate_token_ids"],
                         "p_student_for_selection": metadata["p_student"],
@@ -139,6 +147,10 @@ def select_node_records(
                     }
                 )
     return selected_records
+
+
+def _l2_norm(values: list[float]) -> float:
+    return sum(float(value) ** 2 for value in values) ** 0.5
 
 
 def _default_teacher_context(config: dict[str, Any]) -> str:
@@ -166,6 +178,11 @@ def main() -> None:
     parser.add_argument("--teacher-context", help="Teacher context used for KL-based node selection.")
     parser.add_argument("--model-name", help="Only select nodes for one model from the config.")
     parser.add_argument("--max-positions-per-rollout", type=int, help="Debug cap for scanned generated positions.")
+    parser.add_argument(
+        "--selection-policy",
+        choices=["kl_entropy", "gkd_magnitude"],
+        help="Override diagnostic.selection_policy for this selection pass.",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch-dtype", default="auto")
     parser.add_argument("--overwrite", action="store_true")
@@ -182,6 +199,7 @@ def main() -> None:
         teacher_context=args.teacher_context,
         model_name=args.model_name,
         max_positions_per_rollout=args.max_positions_per_rollout,
+        selection_policy=args.selection_policy,
         device=args.device,
         torch_dtype=args.torch_dtype,
     )

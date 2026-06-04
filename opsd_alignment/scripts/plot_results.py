@@ -43,9 +43,6 @@ def load_alignment_records(
 
 
 def generate_plots(config: dict[str, Any], records: list[dict[str, Any]], output_dir: str | Path | None = None) -> dict[str, Path]:
-    if not records:
-        raise ValueError("No valid alignment records to plot")
-
     import matplotlib
 
     matplotlib.use("Agg")
@@ -53,9 +50,6 @@ def generate_plots(config: dict[str, Any], records: list[dict[str, Any]], output
 
     output_dir = Path(output_dir) if output_dir is not None else output_path(config, "plots")
     output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_order = _checkpoint_order(config, records)
-    context_order = _teacher_context_order(config, records)
-
     paths = {
         "mean_by_checkpoint_context": output_dir / PLOT_FILENAMES["mean_by_checkpoint_context"],
         "alignment_by_correctness": output_dir / PLOT_FILENAMES["alignment_by_correctness"],
@@ -63,6 +57,18 @@ def generate_plots(config: dict[str, Any], records: list[dict[str, Any]], output
         "alignment_vs_success_rate": output_dir / PLOT_FILENAMES["alignment_vs_success_rate"],
         "alignment_distribution": output_dir / PLOT_FILENAMES["alignment_distribution"],
     }
+
+    if not records:
+        _write_placeholder_plots(plt, paths, "No valid alignment records.\nCosine is undefined when g_ideal or g_opsd has near-zero norm.")
+        (output_dir / "NO_VALID_ALIGNMENTS.txt").write_text(
+            "No valid alignment records. This can happen in tiny smoke runs when all forced branches have identical success, "
+            "making g_ideal the zero vector. Increase questions/nodes/forced rollouts for a more informative run.\n",
+            encoding="utf-8",
+        )
+        return paths
+
+    checkpoint_order = _checkpoint_order(config, records)
+    context_order = _teacher_context_order(config, records)
 
     _plot_mean_by_checkpoint_context(plt, records, checkpoint_order, context_order, paths["mean_by_checkpoint_context"])
     _plot_alignment_by_correctness(plt, records, checkpoint_order, paths["alignment_by_correctness"])
@@ -173,6 +179,17 @@ def _plot_alignment_vs_success_rate(plt, records, checkpoint_order, path: Path) 
     fig.tight_layout()
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
+
+def _write_placeholder_plots(plt, paths: dict[str, Path], message: str) -> None:
+    for title, path in paths.items():
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.axis("off")
+        ax.text(0.5, 0.5, message, ha="center", va="center", wrap=True)
+        ax.set_title(title.replace("_", " ").title())
+        fig.tight_layout()
+        fig.savefig(path, dpi=180)
+        plt.close(fig)
 
 
 def _plot_alignment_distribution(plt, records, checkpoint_order, context_order, path: Path) -> None:

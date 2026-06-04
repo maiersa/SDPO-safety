@@ -38,6 +38,7 @@ GSM8K_TRAIN_PATH=${GSM8K_TRAIN_PATH:-datasets/gsm8k/train.parquet}
 GSM8K_EVAL_PATH=${GSM8K_EVAL_PATH:-datasets/gsm8k/test.parquet}
 MATH_TRAIN_PATH=${MATH_TRAIN_PATH:-datasets/math/train.parquet}
 MATH_EVAL_PATH=${MATH_EVAL_PATH:-datasets/math/test.parquet}
+MATH500_EVAL_PATH=${MATH500_EVAL_PATH:-datasets/math500/test.parquet}
 OUTPUT_ROOT=${OUTPUT_ROOT:-outputs/pretrain_benchmarks/rlx_comparison}
 COMBINE_SUMMARIES=${COMBINE_SUMMARIES:-true}
 SKIP_COMPLETED_BENCHMARKS=${SKIP_COMPLETED_BENCHMARKS:-true}
@@ -129,7 +130,7 @@ completed_summary_csv() {
     if [[ ! -d "$output_dir" ]]; then
         return 0
     fi
-    "$PYTHON_BIN" - "$output_dir" "$task" "$PROMPT_STYLE" "$NUM_SAMPLES" "$PASS_AT_K" <<'PY'
+    "$PYTHON_BIN" - "$output_dir" "$task" "$PROMPT_STYLE" "$NUM_SAMPLES" "$PASS_AT_K" "$MAX_NEW_TOKENS" <<'PY'
 import csv
 import sys
 from pathlib import Path
@@ -139,8 +140,9 @@ task = sys.argv[2].lower()
 prompt_style = sys.argv[3]
 num_samples = sys.argv[4]
 pass_at_k = [f"pass@{part.strip()}" for part in sys.argv[5].split(",") if part.strip()]
+max_new_tokens = sys.argv[6]
 accepted_prompt_styles = {prompt_style}
-if task == "math" and prompt_style == "rlx":
+if task in {"math", "math500"} and prompt_style == "rlx":
     # MATH is forced to boxed prompting internally even in mixed
     # TASKS=gsm8k,math runs where the global prompt style is rlx.
     accepted_prompt_styles.add("boxed")
@@ -155,8 +157,9 @@ for path in sorted(output_dir.glob("*/summary.csv"), reverse=True):
             continue
         has_prompt_style = row.get("prompt_style") in accepted_prompt_styles
         has_num_samples = row.get("num_samples") == num_samples
+        has_max_new_tokens = row.get("max_new_tokens") == max_new_tokens
         has_metrics = all(metric in row and row.get(metric, "") != "" for metric in pass_at_k)
-        if has_prompt_style and has_num_samples and has_metrics:
+        if has_prompt_style and has_num_samples and has_max_new_tokens and has_metrics:
             print(path)
             raise SystemExit(0)
 PY
@@ -249,13 +252,13 @@ ensure_eval_checkpoint() {
             echo "Set AUTO_MERGE_FSDP=true or merge it manually to ${target_dir}" >&2
             return 1
         fi
-        echo "Merging FSDP actor checkpoint for evaluation"
-        echo "Local dir: $path"
-        echo "Target dir: $target_dir"
+        echo "Merging FSDP actor checkpoint for evaluation" >&2
+        echo "Local dir: $path" >&2
+        echo "Target dir: $target_dir" >&2
         "$PYTHON_BIN" -m verl.model_merger merge \
             --backend "$MERGER_BACKEND" \
             --local_dir "$path" \
-            --target_dir "$target_dir"
+            --target_dir "$target_dir" >&2
         printf '%s=%s' "$name" "$target_dir"
         return 0
     fi
@@ -332,6 +335,7 @@ run_group() {
                 GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
                 MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
                 MATH_EVAL_PATH="$MATH_EVAL_PATH" \
+                MATH500_EVAL_PATH="$MATH500_EVAL_PATH" \
                 BACKEND="$BACKEND" \
                 TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
                 GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \
@@ -371,6 +375,7 @@ run_group() {
                 GSM8K_EVAL_PATH="$GSM8K_EVAL_PATH" \
                 MATH_TRAIN_PATH="$MATH_TRAIN_PATH" \
                 MATH_EVAL_PATH="$MATH_EVAL_PATH" \
+                MATH500_EVAL_PATH="$MATH500_EVAL_PATH" \
                 BACKEND="$BACKEND" \
                 TENSOR_PARALLEL_SIZE="$TENSOR_PARALLEL_SIZE" \
                 GPU_MEMORY_UTILIZATION="$GPU_MEMORY_UTILIZATION" \

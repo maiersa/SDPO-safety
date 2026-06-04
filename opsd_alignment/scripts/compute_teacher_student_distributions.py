@@ -123,6 +123,8 @@ def compute_distribution_records(
                     "student_teacher_kl": student_teacher_kl(p_student, p_teacher),
                     "selection_student_entropy": node.get("student_entropy"),
                     "selection_student_teacher_kl": node.get("student_teacher_kl"),
+                    "selection_gkd_magnitude": node.get("gkd_magnitude"),
+                    "selection_policy": node.get("selection_policy"),
                     "prefix_token_ids": student_prefix_token_ids,
                     "prefix_text": prefix_text,
                     "teacher_prompt": teacher_prompt,

@@ -58,6 +58,10 @@ def validate_config(config: dict[str, Any], *, check_model_paths: bool = True) -
             issues.append(f"Unknown teacher context: {context}")
 
     diagnostic = config.get("diagnostic") or {}
+    selection_policy = diagnostic.get("selection_policy", "kl_entropy")
+    if selection_policy not in {"kl_entropy", "gkd_magnitude"}:
+        issues.append(f"Unsupported diagnostic.selection_policy: {selection_policy}")
+
     objective = diagnostic.get("distillation_objective", "forward_kl")
     if objective not in {"forward_kl", "reverse_kl", "jsd"}:
         issues.append(f"Unsupported distillation_objective: {objective}")

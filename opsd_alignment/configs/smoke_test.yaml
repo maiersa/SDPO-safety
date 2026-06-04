@@ -34,6 +34,7 @@ diagnostic:
   nodes_per_rollout: 1
   top_k_student: 2
   top_k_teacher: 2
+  selection_policy: kl_entropy
   forced_rollouts_per_candidate: 2
   distillation_objective: forward_kl
   jsd_alpha: 0.5

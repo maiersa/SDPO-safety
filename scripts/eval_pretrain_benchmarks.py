@@ -50,6 +50,14 @@ class CheckpointSpec:
     path: Path
 
 
+@dataclass(frozen=True)
+class CompletionResult:
+    text: str
+    token_count: int
+    finish_reason: str | None = None
+    stop_reason: str | None = None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -58,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         dest="tasks",
         action="append",
         default=[],
-        help="Benchmark task name. Can be repeated or comma-separated. Currently: gsm8k, math.",
+        help="Benchmark task name. Can be repeated or comma-separated. Currently: gsm8k, math, math500.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -89,6 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gsm8k-eval-path", type=Path, default=Path("datasets/gsm8k/test.parquet"))
     parser.add_argument("--math-train-path", type=Path, default=Path("datasets/math/train.parquet"))
     parser.add_argument("--math-eval-path", type=Path, default=Path("datasets/math/test.parquet"))
+    parser.add_argument("--math500-eval-path", type=Path, default=Path("datasets/math500/test.parquet"))
     parser.add_argument("--num-fewshot", type=int, default=None, help="Defaults to 8 for base mode and 0 for trained.")
     parser.add_argument("--num-samples", type=int, default=32)
     parser.add_argument("--pass-at-k", default="1,8,32", help="Comma-separated k values.")
@@ -112,6 +121,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--revision", default=None)
     parser.add_argument("--model-kwargs-json", default=None, help="Optional JSON dict passed to from_pretrained.")
+    parser.add_argument(
+        "--resume-incomplete",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Resume the latest compatible incomplete run under --output-dir and reuse saved JSONL rows.",
+    )
     return parser.parse_args()
 
 
@@ -148,6 +163,121 @@ def parse_pass_at_k(value: str, num_samples: int) -> list[int]:
     if too_large:
         raise ValueError(f"pass@k values {too_large} exceed --num-samples={num_samples}.")
     return ks
+
+
+def run_config(args: argparse.Namespace, tasks: list[str], stop_sequences: list[str]) -> dict[str, Any]:
+    config = vars(args).copy()
+    for key, value in list(config.items()):
+        if isinstance(value, Path):
+            config[key] = str(value)
+    config["output_dir"] = str(args.output_dir)
+    config["stop_sequences"] = stop_sequences
+    config["resolved_answer_format"] = {
+        task_name: resolve_answer_format(args.prompt_style, args.answer_format, task_name)
+        for task_name in tasks
+    }
+    config["tasks"] = tasks
+    return config
+
+
+RESUME_CONFIG_KEYS = (
+    "tasks",
+    "checkpoints",
+    "prompt_mode",
+    "prompt_style",
+    "answer_format",
+    "num_fewshot",
+    "num_samples",
+    "pass_at_k",
+    "temperature",
+    "top_p",
+    "top_k",
+    "max_new_tokens",
+    "max_prompt_tokens",
+    "max_examples",
+    "stop_sequences",
+    "seed",
+    "backend",
+    "gsm8k_train_path",
+    "gsm8k_eval_path",
+    "math_train_path",
+    "math_eval_path",
+    "math500_eval_path",
+)
+
+
+def compatible_run_config(existing: dict[str, Any], current: dict[str, Any]) -> bool:
+    return all(existing.get(key) == current.get(key) for key in RESUME_CONFIG_KEYS)
+
+
+def find_resume_run_dir(output_dir: Path, config: dict[str, Any]) -> Path | None:
+    if not output_dir.exists():
+        return None
+    for config_path in sorted(output_dir.glob("*/run_config.json"), reverse=True):
+        run_dir = config_path.parent
+        if (run_dir / "summary.csv").exists() or (run_dir / "summary.json").exists():
+            continue
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if compatible_run_config(existing, config):
+            return run_dir
+    return None
+
+
+def prediction_key(index: Any) -> str:
+    return str(index)
+
+
+def load_existing_predictions(
+    predictions_path: Path,
+    checkpoint: CheckpointSpec,
+    task: TaskSpec,
+    prompt_mode: str,
+    prompt_style: str,
+    answer_format: str,
+    num_samples: int,
+) -> dict[str, dict[str, Any]]:
+    if not predictions_path.exists():
+        return {}
+    records: dict[str, dict[str, Any]] = {}
+    with predictions_path.open(encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Malformed JSON in {predictions_path}:{line_number}: {exc}") from exc
+            samples = record.get("samples")
+            if not isinstance(samples, list) or len(samples) != num_samples:
+                continue
+            expected = {
+                "task": task.name,
+                "checkpoint": checkpoint.name,
+                "checkpoint_path": str(checkpoint.path),
+                "prompt_mode": prompt_mode,
+                "prompt_style": prompt_style,
+                "answer_format": answer_format,
+            }
+            mismatched = [key for key, value in expected.items() if record.get(key) != value]
+            if mismatched:
+                raise ValueError(
+                    f"Existing prediction row in {predictions_path}:{line_number} does not match "
+                    f"the requested run fields: {', '.join(mismatched)}"
+                )
+            records[prediction_key(record.get("index"))] = record
+    return records
+
+
+def ensure_jsonl_append_boundary(path: Path) -> None:
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("rb+") as f:
+        f.seek(-1, os.SEEK_END)
+        if f.read(1) != b"\n":
+            f.write(b"\n")
 
 
 def torch_dtype(name: str) -> str | torch.dtype:
@@ -399,6 +529,15 @@ def task_registry(args: argparse.Namespace) -> dict[str, TaskSpec]:
             row_loader=load_math_eval_rows,
             scorer=score_math_completion,
         ),
+        "math500": TaskSpec(
+            name="math500",
+            train_path=args.math_train_path,
+            eval_path=args.math500_eval_path,
+            prompt_builder=math_prompt,
+            exemplar_loader=load_math_exemplars,
+            row_loader=load_math_eval_rows,
+            scorer=score_math_completion,
+        ),
     }
 
 
@@ -468,6 +607,42 @@ def estimate_pass_at_k(num_samples: int, num_correct: int, k: int) -> float:
     return 1.0 - product
 
 
+def count_text_tokens(tokenizer: Any | None, text: str) -> int | None:
+    if tokenizer is None:
+        return None
+    encoded = tokenizer(text, add_special_tokens=False)
+    return len(encoded["input_ids"])
+
+
+def length_stats(values: list[int]) -> dict[str, float | int | None]:
+    if not values:
+        return {
+            "completion_tokens_min": None,
+            "completion_tokens_mean": None,
+            "completion_tokens_median": None,
+            "completion_tokens_p90": None,
+            "completion_tokens_p95": None,
+            "completion_tokens_p99": None,
+            "completion_tokens_max": None,
+        }
+    ordered = sorted(values)
+
+    def percentile(percent: float) -> int:
+        idx = math.ceil((percent / 100.0) * len(ordered)) - 1
+        idx = max(0, min(idx, len(ordered) - 1))
+        return ordered[idx]
+
+    return {
+        "completion_tokens_min": ordered[0],
+        "completion_tokens_mean": sum(ordered) / len(ordered),
+        "completion_tokens_median": percentile(50),
+        "completion_tokens_p90": percentile(90),
+        "completion_tokens_p95": percentile(95),
+        "completion_tokens_p99": percentile(99),
+        "completion_tokens_max": ordered[-1],
+    }
+
+
 def load_model_and_tokenizer(args: argparse.Namespace, checkpoint_path: Path):
     model_kwargs = json.loads(args.model_kwargs_json) if args.model_kwargs_json else {}
     tokenizer = AutoTokenizer.from_pretrained(
@@ -495,7 +670,7 @@ def generate_for_prompts(
     tokenizer: AutoTokenizer,
     prompts: list[str],
     args: argparse.Namespace,
-) -> list[list[str]]:
+) -> list[list[CompletionResult]]:
     inputs = tokenizer(
         prompts,
         return_tensors="pt",
@@ -519,11 +694,16 @@ def generate_for_prompts(
     with torch.inference_mode():
         output_ids = model.generate(**inputs, **generation_kwargs)
     prompt_width = inputs["input_ids"].shape[1]
-    grouped: list[list[str]] = [[] for _ in prompts]
+    grouped: list[list[CompletionResult]] = [[] for _ in prompts]
     for output_idx, ids in enumerate(output_ids):
         prompt_idx = output_idx // args.num_samples
         completion_ids = ids[prompt_width:]
-        grouped[prompt_idx].append(tokenizer.decode(completion_ids, skip_special_tokens=True))
+        grouped[prompt_idx].append(
+            CompletionResult(
+                text=tokenizer.decode(completion_ids, skip_special_tokens=True),
+                token_count=len(completion_ids),
+            )
+        )
     return grouped
 
 
@@ -556,7 +736,7 @@ def generate_for_prompts_vllm(
     prompts: list[str],
     args: argparse.Namespace,
     stop_sequences: list[str],
-) -> list[list[str]]:
+) -> list[list[CompletionResult]]:
     from vllm import SamplingParams
 
     sampling_params = SamplingParams(
@@ -571,7 +751,17 @@ def generate_for_prompts_vllm(
     outputs = llm.generate(prompts, sampling_params)
     grouped = []
     for request_output in outputs:
-        grouped.append([completion.text for completion in request_output.outputs])
+        grouped.append(
+            [
+                CompletionResult(
+                    text=completion.text,
+                    token_count=len(completion.token_ids or []),
+                    finish_reason=getattr(completion, "finish_reason", None),
+                    stop_reason=getattr(completion, "stop_reason", None),
+                )
+                for completion in request_output.outputs
+            ]
+        )
     return grouped
 
 
@@ -589,70 +779,132 @@ def evaluate_checkpoint_task(
     answer_format = resolve_answer_format(args.prompt_style, args.answer_format, task.name)
     exemplars = task.exemplar_loader(task.train_path, fewshot)
     rows = task.row_loader(task.eval_path, args.max_examples)
-
-    if args.backend == "hf":
-        model, tokenizer = load_model_and_tokenizer(args, checkpoint.path)
-        llm = None
-    else:
-        model = tokenizer = None
-        llm = load_vllm(args, checkpoint.path)
     predictions_path = run_dir / f"{checkpoint.name}__{task.name}.jsonl"
-    totals = {k: 0.0 for k in pass_ks}
+    existing_records = load_existing_predictions(
+        predictions_path=predictions_path,
+        checkpoint=checkpoint,
+        task=task,
+        prompt_mode=args.prompt_mode,
+        prompt_style=args.prompt_style,
+        answer_format=answer_format,
+        num_samples=args.num_samples,
+    )
 
-    with predictions_path.open("w", encoding="utf-8") as pred_f:
-        for start in range(0, len(rows), args.batch_size):
-            batch = rows[start : start + args.batch_size]
-            prompts = [task.prompt_builder(row["question"], exemplars, args.prompt_mode, args.prompt_style) for row in batch]
-            if args.backend == "hf":
-                completions_by_prompt = generate_for_prompts(model, tokenizer, prompts, args)
-            else:
-                completions_by_prompt = generate_for_prompts_vllm(llm, prompts, args, stop_sequences)
-            for row, prompt, completions in zip(batch, prompts, completions_by_prompt, strict=True):
-                sample_records = []
-                correct_count = 0
-                for sample_idx, raw_completion in enumerate(completions):
-                    stopped_completion, stop_reason = apply_stop_sequences(raw_completion, stop_sequences)
-                    correct, extracted_answer = task.scorer(stopped_completion, row["ground_truth"], answer_format)
-                    correct_count += int(correct)
-                    sample_records.append(
-                        {
-                            "sample_index": sample_idx,
-                            "raw_completion": raw_completion,
-                            "completion": stopped_completion,
-                            "stop_reason": stop_reason,
-                            "extracted_answer": extracted_answer,
-                            "correct": correct,
-                        }
-                    )
-                pass_at = {
-                    f"pass@{k}": estimate_pass_at_k(args.num_samples, correct_count, k)
-                    for k in pass_ks
-                }
-                for k in pass_ks:
-                    totals[k] += pass_at[f"pass@{k}"]
-                pred_f.write(
-                    json.dumps(
-                        {
-                            "task": task.name,
-                            "checkpoint": checkpoint.name,
-                            "checkpoint_path": str(checkpoint.path),
-                            "prompt_mode": args.prompt_mode,
-                            "prompt_style": args.prompt_style,
-                            "answer_format": answer_format,
-                            "index": row["index"],
-                            "question": row["question"],
-                            "ground_truth": row["ground_truth"],
-                            "prompt": prompt,
-                            "num_correct": correct_count,
-                            "pass_at": pass_at,
-                            "samples": sample_records,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-            done = min(start + args.batch_size, len(rows))
-            print(f"[{checkpoint.name}/{task.name}] evaluated {done}/{len(rows)}", flush=True)
+    totals = {k: 0.0 for k in pass_ks}
+    completion_token_counts: list[int] = []
+    raw_completion_token_counts: list[int] = []
+    correct_completion_token_counts: list[int] = []
+    length_capped = 0
+
+    def add_record_metrics(record: dict[str, Any]) -> None:
+        nonlocal length_capped
+        samples = record["samples"]
+        correct_count = sum(int(bool(sample.get("correct"))) for sample in samples)
+        for k in pass_ks:
+            totals[k] += estimate_pass_at_k(args.num_samples, correct_count, k)
+        for sample in samples:
+            raw_tokens = sample.get("raw_completion_tokens")
+            if raw_tokens is not None:
+                raw_completion_token_counts.append(int(raw_tokens))
+            completion_tokens = sample.get("completion_tokens")
+            if completion_tokens is not None:
+                completion_token_counts.append(int(completion_tokens))
+                if sample.get("correct"):
+                    correct_completion_token_counts.append(int(completion_tokens))
+            length_capped += int(bool(sample.get("hit_max_new_tokens")))
+
+    missing_rows = []
+    for row in rows:
+        key = prediction_key(row["index"])
+        prompt = task.prompt_builder(row["question"], exemplars, args.prompt_mode, args.prompt_style)
+        record = existing_records.get(key)
+        if record is None:
+            missing_rows.append(row)
+            continue
+        if record.get("question") != row["question"] or record.get("ground_truth") != row["ground_truth"]:
+            raise ValueError(f"Existing prediction for {checkpoint.name}/{task.name} index={row['index']} has stale row content.")
+        if record.get("prompt") != prompt:
+            raise ValueError(f"Existing prediction for {checkpoint.name}/{task.name} index={row['index']} has a stale prompt.")
+        add_record_metrics(record)
+
+    if existing_records:
+        print(
+            f"[{checkpoint.name}/{task.name}] reusing {len(rows) - len(missing_rows)}/{len(rows)} saved examples from {predictions_path}",
+            flush=True,
+        )
+
+    model = None
+    llm = None
+    tokenizer = None
+    if missing_rows:
+        if args.backend == "hf":
+            model, tokenizer = load_model_and_tokenizer(args, checkpoint.path)
+        else:
+            llm = load_vllm(args, checkpoint.path)
+            tokenizer = llm.get_tokenizer() if hasattr(llm, "get_tokenizer") else None
+
+    if missing_rows:
+        ensure_jsonl_append_boundary(predictions_path)
+        with predictions_path.open("a", encoding="utf-8") as pred_f:
+            for start in range(0, len(missing_rows), args.batch_size):
+                batch = missing_rows[start : start + args.batch_size]
+                prompts = [task.prompt_builder(row["question"], exemplars, args.prompt_mode, args.prompt_style) for row in batch]
+                if args.backend == "hf":
+                    completions_by_prompt = generate_for_prompts(model, tokenizer, prompts, args)
+                else:
+                    completions_by_prompt = generate_for_prompts_vllm(llm, prompts, args, stop_sequences)
+                for row, prompt, completions in zip(batch, prompts, completions_by_prompt, strict=True):
+                    sample_records = []
+                    correct_count = 0
+                    for sample_idx, completion_result in enumerate(completions):
+                        raw_completion = completion_result.text
+                        stopped_completion, stop_reason = apply_stop_sequences(raw_completion, stop_sequences)
+                        correct, extracted_answer = task.scorer(stopped_completion, row["ground_truth"], answer_format)
+                        correct_count += int(correct)
+                        completion_tokens = count_text_tokens(tokenizer, stopped_completion)
+                        raw_completion_tokens = completion_result.token_count
+                        hit_max_new_tokens = (
+                            completion_result.finish_reason == "length"
+                            or raw_completion_tokens >= args.max_new_tokens
+                        )
+                        sample_records.append(
+                            {
+                                "sample_index": sample_idx,
+                                "raw_completion": raw_completion,
+                                "completion": stopped_completion,
+                                "stop_reason": stop_reason,
+                                "generation_finish_reason": completion_result.finish_reason,
+                                "generation_stop_reason": completion_result.stop_reason,
+                                "raw_completion_tokens": raw_completion_tokens,
+                                "completion_tokens": completion_tokens,
+                                "hit_max_new_tokens": hit_max_new_tokens,
+                                "extracted_answer": extracted_answer,
+                                "correct": correct,
+                            }
+                        )
+                    pass_at = {
+                        f"pass@{k}": estimate_pass_at_k(args.num_samples, correct_count, k)
+                        for k in pass_ks
+                    }
+                    record = {
+                        "task": task.name,
+                        "checkpoint": checkpoint.name,
+                        "checkpoint_path": str(checkpoint.path),
+                        "prompt_mode": args.prompt_mode,
+                        "prompt_style": args.prompt_style,
+                        "answer_format": answer_format,
+                        "index": row["index"],
+                        "question": row["question"],
+                        "ground_truth": row["ground_truth"],
+                        "prompt": prompt,
+                        "num_correct": correct_count,
+                        "pass_at": pass_at,
+                        "samples": sample_records,
+                    }
+                    add_record_metrics(record)
+                    pred_f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                done = len(rows) - len(missing_rows) + min(start + args.batch_size, len(missing_rows))
+                print(f"[{checkpoint.name}/{task.name}] evaluated {done}/{len(rows)}", flush=True)
 
     del model
     del llm
@@ -660,6 +912,18 @@ def evaluate_checkpoint_task(
         torch.cuda.empty_cache()
 
     metrics = {f"pass@{k}": totals[k] / len(rows) if rows else math.nan for k in pass_ks}
+    token_metrics = length_stats(completion_token_counts)
+    token_metrics.update(
+        {f"raw_{key}": value for key, value in length_stats(raw_completion_token_counts).items()}
+    )
+    token_metrics.update(
+        {f"correct_{key}": value for key, value in length_stats(correct_completion_token_counts).items()}
+    )
+    total_samples = len(rows) * args.num_samples
+    token_metrics["num_completion_token_samples"] = len(completion_token_counts)
+    token_metrics["num_correct_completion_token_samples"] = len(correct_completion_token_counts)
+    token_metrics["hit_max_new_tokens_count"] = length_capped
+    token_metrics["hit_max_new_tokens_rate"] = length_capped / total_samples if total_samples else math.nan
     return {
         "checkpoint": checkpoint.name,
         "checkpoint_path": str(checkpoint.path),
@@ -676,6 +940,7 @@ def evaluate_checkpoint_task(
         "backend": args.backend,
         "tensor_parallel_size": args.tensor_parallel_size if args.backend == "vllm" else None,
         "metrics": metrics,
+        "token_metrics": token_metrics,
         "predictions_path": str(predictions_path),
     }
 
@@ -698,18 +963,16 @@ def main() -> None:
         stop_sequences.extend(DEFAULT_GSM8K_STOPS)
     stop_sequences.extend(args.stop_sequence)
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    run_dir = args.output_dir.expanduser() / timestamp
-    run_dir.mkdir(parents=True, exist_ok=True)
+    config = run_config(args, tasks, stop_sequences)
+    output_dir = args.output_dir.expanduser()
+    run_dir = find_resume_run_dir(output_dir, config) if args.resume_incomplete else None
+    if run_dir is None:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        run_dir = output_dir / timestamp
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        print(f"Resuming incomplete benchmark run: {run_dir}", flush=True)
 
-    config = vars(args).copy()
-    config["output_dir"] = str(args.output_dir)
-    config["stop_sequences"] = stop_sequences
-    config["resolved_answer_format"] = {
-        task_name: resolve_answer_format(args.prompt_style, args.answer_format, task_name)
-        for task_name in tasks
-    }
-    config["tasks"] = tasks
     (run_dir / "run_config.json").write_text(json.dumps(config, indent=2, default=str), encoding="utf-8")
 
     results = []
@@ -730,6 +993,33 @@ def main() -> None:
     summary_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
     csv_path = run_dir / "summary.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
+        token_metric_fields = [
+            "completion_tokens_min",
+            "completion_tokens_mean",
+            "completion_tokens_median",
+            "completion_tokens_p90",
+            "completion_tokens_p95",
+            "completion_tokens_p99",
+            "completion_tokens_max",
+            "raw_completion_tokens_min",
+            "raw_completion_tokens_mean",
+            "raw_completion_tokens_median",
+            "raw_completion_tokens_p90",
+            "raw_completion_tokens_p95",
+            "raw_completion_tokens_p99",
+            "raw_completion_tokens_max",
+            "correct_completion_tokens_min",
+            "correct_completion_tokens_mean",
+            "correct_completion_tokens_median",
+            "correct_completion_tokens_p90",
+            "correct_completion_tokens_p95",
+            "correct_completion_tokens_p99",
+            "correct_completion_tokens_max",
+            "num_completion_token_samples",
+            "num_correct_completion_token_samples",
+            "hit_max_new_tokens_count",
+            "hit_max_new_tokens_rate",
+        ]
         fieldnames = [
             "checkpoint",
             "checkpoint_path",
@@ -746,6 +1036,7 @@ def main() -> None:
             "backend",
             "tensor_parallel_size",
             *[f"pass@{k}" for k in pass_ks],
+            *token_metric_fields,
             "predictions_path",
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -753,6 +1044,7 @@ def main() -> None:
         for result in results:
             row = {key: result.get(key) for key in fieldnames}
             row.update(result["metrics"])
+            row.update(result["token_metrics"])
             writer.writerow(row)
 
     print(f"Wrote summary: {summary_path}")

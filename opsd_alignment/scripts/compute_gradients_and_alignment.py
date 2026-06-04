@@ -104,6 +104,8 @@ def compute_alignment_record(
         "student_rollout_correct": record.get("student_rollout_correct"),
         "student_entropy": record.get("student_entropy"),
         "student_teacher_kl": record.get("student_teacher_kl"),
+        "selection_gkd_magnitude": record.get("selection_gkd_magnitude"),
+        "selection_policy": record.get("selection_policy"),
         "candidate_token_ids": record["candidate_token_ids"],
         "candidate_tokens": _merge_candidate_success(record.get("candidate_tokens", []), p_success, candidate_branch_records),
         "p_student": p_student,
