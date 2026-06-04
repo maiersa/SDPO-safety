@@ -403,21 +403,28 @@ This list tells us what the background section must support. Anything that does 
 Reinforcement learning with verifiable rewards (RLVR) optimizes language models using automatically checkable task outcomes. In mathematical reasoning, a sampled solution receives a reward based on final-answer correctness, and the policy is updated to increase the likelihood of higher-reward samples. GRPO is a sparse on-policy RLVR method that estimates advantages within a group of samples from the same prompt and applies a policy-gradient update without requiring a learned critic \cite{shao2024deepseekmath}. The recent \emph{RL Excursions during Pretraining} study shows that GRPO can improve reasoning even when applied to intermediate pretraining checkpoints, motivating the question of whether other on-policy post-training objectives can also become useful early \cite{bansal2026rlexcursions}.
 
 
+
 \paragraph{OPSD as dense on-policy distillation.}
-OPSD builds on teacher-student distillation, but uses a teacher that is evaluated on the student's own on-policy rollouts and is conditioned on privileged context. For a prompt \(x\), the student policy samples a response \(y \sim \pi_S(\cdot \mid x)\). At each prefix \(y_{<t}\), the student predicts a next-token distribution from the ordinary context \((x,y_{<t})\), while the teacher predicts a next-token distribution from the privileged context \((x,c,y_{<t})\), where \(c\) may be a correct answer, reference solution, feedback, or reflection. A common reverse-KL form of the OPSD objective is
+OPSD is motivated by the idea that a model can learn from privileged solutions in the same way a student can study a worked solution and internalize the reasoning. Given a problem \(x\) and reference solution or answer \(y^\star\), OPSD instantiates a student and teacher from the same model parameters but with different conditioning contexts. The student observes only the problem and samples an on-policy response \(\hat{y} \sim p_S(\cdot \mid x)\). The teacher conditions on the same problem together with privileged information \(y^\star\), and both policies evaluate the student-generated trajectory token by token:
+\[
+p_S(\cdot \mid x,\hat{y}_{<n}),
+\qquad
+p_T(\cdot \mid x,y^\star,\hat{y}_{<n}).
+\]
+Rather than assigning a scalar reward to the completed rollout, OPSD minimizes a trajectory-averaged divergence between these next-token distributions:
 \[
 \mathcal{L}_{\mathrm{OPSD}}
-= \mathbb{E}_{x, y \sim \pi_S(\cdot \mid x)}
+= \mathbb{E}_{(x,y^\star),\hat{y}\sim p_S(\cdot\mid x)}
 \left[
-\frac{1}{|y|}\sum_{t=1}^{|y|}
-D_{\mathrm{KL}}\!\left(
-\pi_S(\cdot \mid x,y_{<t})
-\;\middle\|\;
-\pi_T(\cdot \mid x,c,y_{<t})
+\frac{1}{|\hat{y}|}\sum_{n=1}^{|\hat{y}|}
+D\!\left(
+ p_T(\cdot \mid x,y^\star,\hat{y}_{<n})
+ \;\middle\|\;
+ p_S(\cdot \mid x,\hat{y}_{<n})
 \right)
-\right].
+\right],
 \]
-This objective differs from sparse RLVR methods such as GRPO in where the learning signal enters. GRPO scores a completed rollout with a scalar reward and uses that reward to weight a policy update, while OPSD supplies a token-level teacher distribution along the sampled trajectory. This makes OPSD appealing as a credit-assignment mechanism, but also creates the key risk studied in this project: if the privileged teacher distribution is not aligned with continuations that improve final-answer correctness, the dense update can become confidently unhelpful. OPD-style methods have appeared in recent model post-training pipelines and analyses, including Qwen3, DeepSeek-V4, and MiMo-style systems \cite{qwen3technical,deepseekv4,xiao2026mimo,rethinkingopd}.
+where \(D\) may be a KL divergence or a generalized Jensen-Shannon divergence. In our main OPSD runs, we use full-vocabulary distillation with JSD-style mixing, corresponding to \(\alpha=0.5\), and apply pointwise KL clipping to prevent a small number of high-divergence vocabulary entries from dominating the update. This objective gives OPSD a different credit-assignment structure from GRPO: GRPO scores a completed rollout with a sparse reward, while OPSD supplies dense token-level targets along the sampled trajectory. The key risk studied in this project is that the privileged teacher distribution may be dense without being reward-aligned: if it sharpens probability mass around tokens that do not improve final-answer correctness, the dense update can become confidently unhelpful. OPD-style methods have appeared in recent model post-training pipelines and analyses, including Qwen3, DeepSeek-V4, and MiMo-style systems \cite{qwen3technical,deepseekv4,xiao2026mimo,rethinkingopd}.
 
 \paragraph{Checkpoint-stage post-training with OLMo 3.}
 Most post-training studies evaluate a method on a fixed final base model. In contrast, this project studies post-training as a function of model training stage. OLMo 3 is useful for this because checkpoints are available across several stages of training \cite{olmo3}. We use this checkpoint structure to ask whether OPSD adds value over the corresponding base checkpoint, rather than only asking whether later checkpoints outperform earlier ones. In our experiments, the main sweep includes Stage 2 checkpoints such as \texttt{stage2-step16000}, \texttt{stage2-step32000}, and \texttt{stage2-step47684}, as well as Stage 3 checkpoints such as \texttt{stage3-step1000}, \texttt{stage3-step4000}, \texttt{stage3-step8000}, and \texttt{main}. These checkpoints let us compare base, OPSD-trained, and GRPO-trained models along the training trajectory.
@@ -437,25 +444,25 @@ Although the main focus of this report is mathematical reasoning, we also includ
 ```latex
 \section{Experimental Design}
 
-\paragraph{Overview.}
+\subsection{Overview}
 The main experiment evaluates whether OPSD improves mathematical reasoning when applied to intermediate OLMo 3 checkpoints. For each selected checkpoint, we train an OPSD model and compare it to the corresponding base checkpoint. We also include GRPO-trained models as sparse RLVR references. The goal is not to maximize final benchmark performance, but to measure whether each post-training method adds value beyond the checkpoint's existing capability.
 
-\paragraph{Checkpoints.}
+\subsection{Checkpoints}
 We focus on OLMo 3 7B checkpoints from the later stages of training. The Stage 2 sweep includes \texttt{stage2-step16000}, \texttt{stage2-step32000}, and \texttt{stage2-step47684}. The Stage 3 sweep includes \texttt{stage3-step1000}, \texttt{stage3-step4000}, \texttt{stage3-step8000}, and \texttt{main}. Earlier exploratory runs also considered Stage 1 checkpoints, but the main analysis centers on Stage 2 and Stage 3 because these checkpoints are more likely to have enough mathematical capability for OPSD's privileged signal to be meaningful.
 
-\paragraph{Training data and objective.}
+\subsection{Training Data and Objective}
 OPSD training uses the OpenMathInstruct-style training data. We use the \texttt{sdpo\_math\_teacher} configuration with student-generated on-policy rollouts. The teacher receives privileged mathematical context through the math-teacher prompt, while the student is trained on the sampled trajectories. After preliminary sweeps, the main OPSD configuration uses JSD-style mixing with \(\alpha=0.5\), a frozen teacher with teacher update rate 0, full-vocabulary distillation, and pointwise KL clipping at 0.05. Training runs use 100 post-training steps, rollout batch size 8, PPO mini-batch size 64, and train batch size 64. We use seed 0 for the main sweep.
 
-\paragraph{GRPO reference runs.}
+\subsection{GRPO Reference Runs}
 We compare OPSD against GRPO because GRPO is the sparse RLVR method used as the reference point in RL Excursions. The GRPO runs use the same checkpoint-sweep framing: train from an intermediate checkpoint and compare the resulting model against the same base checkpoint. This allows us to distinguish failures of early post-training in general from failures specific to OPSD's privileged distillation signal.
 
-\paragraph{Benchmark evaluation.}
+\subsection{Benchmark Evaluation}
 Training validation is not used as the final source of truth. Instead, we evaluate base and post-trained checkpoints with a separate benchmark pipeline under \texttt{outputs/pretrain\_benchmarks}. This evaluation follows an RL-Excursions-style setup: base checkpoints are evaluated in \texttt{base} prompt mode, trained checkpoints in \texttt{trained} prompt mode, with \texttt{rlx} prompt style, temperature 0.6, top-p 1.0, and 32 sampled completions where feasible. The main metrics are pass@1, pass@8, and pass@32 on GSM8K and MATH-style benchmarks. When only smaller runs are available, we report the available pass@k values and clearly mark them as such.
 
-\paragraph{Model conversion and evaluation details.}
+\subsection{Model Conversion and Evaluation Details}
 Base Hugging Face checkpoints are evaluated directly. Post-trained actor checkpoints are first merged from FSDP format into Hugging Face format before benchmark evaluation. We use the same answer extraction and benchmark scripts for base, OPSD, and GRPO models to avoid conflating training-validation behavior with benchmark performance. This distinction is important because OpenMathInstruct validation uses chat-style prompts and boxed-answer reward parsing, while the benchmark path uses plain benchmark prompts and computes pass@k from a shared sample pool.
 
-\paragraph{Reporting.}
+\subsection{Reporting}
 For each checkpoint, method, and benchmark, we report absolute pass@k and compare it to the corresponding base checkpoint. We summarize whether OPSD improves over base, whether GRPO improves over base, and whether the relative pattern changes across training stages. The main result is the checkpoint-wise comparison between base, OPSD, and GRPO, rather than a single final-model score.
 ```
 
